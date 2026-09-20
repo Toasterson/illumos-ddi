@@ -17,12 +17,12 @@ pub const KM_NORMALPRI: c_int = 0x0008;
 pub const KM_NOSLEEP_LAZY: c_int = KM_NOSLEEP | KM_NORMALPRI;
 
 unsafe extern "C" {
-    /// `kmem_alloc(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `kmem_alloc(9F)`. Architecture independent level 1 (DDI/DKI).
     /// Memory is at least 8-byte aligned; no larger alignment may be assumed.
     pub fn kmem_alloc(size: size_t, kmflags: c_int) -> *mut c_void;
-    /// `kmem_zalloc(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `kmem_zalloc(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn kmem_zalloc(size: size_t, kmflags: c_int) -> *mut c_void;
-    /// `kmem_free(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `kmem_free(9F)`. Architecture independent level 1 (DDI/DKI).
     /// `size` must equal the size passed at allocation.
     pub fn kmem_free(buf: *mut c_void, size: size_t);
 }

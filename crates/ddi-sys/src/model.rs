@@ -21,6 +21,6 @@ impl model_t {
 pub const DDI_MODEL_MASK: c_int = 0x0FF00000;
 
 unsafe extern "C" {
-    /// `ddi_model_convert_from(9F)` — illumos DDI specific (illumos DDI).
+    /// `ddi_model_convert_from(9F)`. illumos DDI specific (illumos DDI).
     pub fn ddi_model_convert_from(model: model_t) -> model_t;
 }

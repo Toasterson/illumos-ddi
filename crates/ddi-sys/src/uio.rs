@@ -65,10 +65,10 @@ const _: () = assert!(core::mem::offset_of!(uio, uio_loffset) == 16);
 const _: () = assert!(core::mem::offset_of!(uio, uio_resid) == 40);
 
 unsafe extern "C" {
-    /// `uiomove(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `uiomove(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn uiomove(addr: *mut c_void, nbytes: size_t, rwflag: uio_rw_t, uiop: *mut uio) -> c_int;
-    /// `uiocopy(9F)` — illumos DDI specific (illumos DDI).
+    /// `uiocopy(9F)`. illumos DDI specific (illumos DDI).
     pub fn uiocopy(addr: *mut c_void, nbytes: size_t, rwflag: uio_rw_t, uiop: *mut uio, cbytes: *mut size_t) -> c_int;
-    /// `uioskip(9F)` — illumos DDI specific (illumos DDI).
+    /// `uioskip(9F)`. illumos DDI specific (illumos DDI).
     pub fn uioskip(uiop: *mut uio, nbytes: size_t);
 }

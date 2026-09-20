@@ -47,10 +47,10 @@ unsafe extern "C" {
     /// `mod_miscops`: `mod_ops` for miscellaneous modules.
     pub static mod_miscops: mod_ops;
 
-    /// `mod_install(9F)` — illumos DDI specific (illumos DDI). Returns 0 or errno.
+    /// `mod_install(9F)`. illumos DDI specific (illumos DDI). Returns 0 or errno.
     pub fn mod_install(modlp: *mut modlinkage) -> c_int;
-    /// `mod_remove(9F)` — illumos DDI specific (illumos DDI). Returns 0 or errno.
+    /// `mod_remove(9F)`. illumos DDI specific (illumos DDI). Returns 0 or errno.
     pub fn mod_remove(modlp: *mut modlinkage) -> c_int;
-    /// `mod_info(9F)` — illumos DDI specific (illumos DDI).
+    /// `mod_info(9F)`. illumos DDI specific (illumos DDI).
     pub fn mod_info(modlp: *mut modlinkage, modinfop: *mut modinfo) -> c_int;
 }

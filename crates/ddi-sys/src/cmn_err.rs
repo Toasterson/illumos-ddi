@@ -14,11 +14,11 @@ pub const CE_PANIC: c_int = 3;
 pub const CE_IGNORE: c_int = 4;
 
 unsafe extern "C" {
-    /// `cmn_err(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `cmn_err(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn cmn_err(level: c_int, fmt: *const c_char, ...);
-    /// `dev_err(9F)` — illumos DDI specific (illumos DDI). Prefixes the message
+    /// `dev_err(9F)`. illumos DDI specific (illumos DDI). Prefixes the message
     /// with the driver name and instance.
     pub fn dev_err(dip: dev_info_t, level: c_int, fmt: *const c_char, ...);
-    /// `panic(9F)` — illumos DDI specific (illumos DDI).
+    /// `panic(9F)`. illumos DDI specific (illumos DDI).
     pub fn panic(fmt: *const c_char, ...) -> !;
 }

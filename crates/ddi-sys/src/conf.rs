@@ -16,13 +16,13 @@ pub const D_HOTPLUG: c_int = 0x400;
 pub const D_U64BIT: c_int = 0x1000;
 
 unsafe extern "C" {
-    /// `nulldev(9F)` — Architecture independent level 1 (DDI/DKI). Returns 0.
+    /// `nulldev(9F)`. Architecture independent level 1 (DDI/DKI). Returns 0.
     /// Untyped in C; the safe crate provides per-slot stubs instead of
     /// casting this.
     pub fn nulldev() -> c_int;
-    /// `nodev(9F)` — Architecture independent level 1 (DDI/DKI). Returns ENXIO.
+    /// `nodev(9F)`. Architecture independent level 1 (DDI/DKI). Returns ENXIO.
     pub fn nodev() -> c_int;
-    /// `nochpoll(9F)` — illumos DDI specific (illumos DDI). Returns ENXIO.
+    /// `nochpoll(9F)`. illumos DDI specific (illumos DDI). Returns ENXIO.
     pub fn nochpoll(
         dev: dev_t,
         events: c_short,

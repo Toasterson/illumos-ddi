@@ -113,52 +113,52 @@ impl time_res_t {
 }
 
 unsafe extern "C" {
-    /// `mutex_init(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `mutex_init(9F)`. Architecture independent level 1 (DDI/DKI).
     /// `arg` is the interrupt priority cookie for `MUTEX_DRIVER`, else NULL.
     pub fn mutex_init(mp: *mut kmutex_t, name: *const c_char, mtype: kmutex_type_t, arg: *mut c_void);
-    /// `mutex_destroy(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `mutex_destroy(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn mutex_destroy(mp: *mut kmutex_t);
-    /// `mutex_enter(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `mutex_enter(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn mutex_enter(mp: *mut kmutex_t);
-    /// `mutex_exit(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `mutex_exit(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn mutex_exit(mp: *mut kmutex_t);
-    /// `mutex_tryenter(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `mutex_tryenter(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn mutex_tryenter(mp: *mut kmutex_t) -> c_int;
-    /// `mutex_owned(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `mutex_owned(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn mutex_owned(mp: *mut kmutex_t) -> c_int;
 
-    /// `cv_init(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `cv_init(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn cv_init(cvp: *mut kcondvar_t, name: *const c_char, ctype: kcv_type_t, arg: *mut c_void);
-    /// `cv_destroy(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `cv_destroy(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn cv_destroy(cvp: *mut kcondvar_t);
-    /// `cv_wait(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `cv_wait(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn cv_wait(cvp: *mut kcondvar_t, mp: *mut kmutex_t);
-    /// `cv_wait_sig(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `cv_wait_sig(9F)`. Architecture independent level 1 (DDI/DKI).
     /// Returns 0 if interrupted by a signal.
     pub fn cv_wait_sig(cvp: *mut kcondvar_t, mp: *mut kmutex_t) -> c_int;
-    /// `cv_timedwait(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `cv_timedwait(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn cv_timedwait(cvp: *mut kcondvar_t, mp: *mut kmutex_t, timeout: clock_t) -> clock_t;
-    /// `cv_reltimedwait(9F)` — illumos DDI specific (illumos DDI).
+    /// `cv_reltimedwait(9F)`. illumos DDI specific (illumos DDI).
     pub fn cv_reltimedwait(cvp: *mut kcondvar_t, mp: *mut kmutex_t, delta: clock_t, res: time_res_t) -> clock_t;
-    /// `cv_signal(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `cv_signal(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn cv_signal(cvp: *mut kcondvar_t);
-    /// `cv_broadcast(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `cv_broadcast(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn cv_broadcast(cvp: *mut kcondvar_t);
 
-    /// `rw_init(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `rw_init(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn rw_init(rwlp: *mut krwlock_t, name: *const c_char, rwtype: krw_type_t, arg: *mut c_void);
-    /// `rw_destroy(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `rw_destroy(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn rw_destroy(rwlp: *mut krwlock_t);
-    /// `rw_enter(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `rw_enter(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn rw_enter(rwlp: *mut krwlock_t, rw: krw_t);
-    /// `rw_exit(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `rw_exit(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn rw_exit(rwlp: *mut krwlock_t);
-    /// `rw_tryenter(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `rw_tryenter(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn rw_tryenter(rwlp: *mut krwlock_t, rw: krw_t) -> c_int;
-    /// `rw_downgrade(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `rw_downgrade(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn rw_downgrade(rwlp: *mut krwlock_t);
-    /// `rw_tryupgrade(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `rw_tryupgrade(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn rw_tryupgrade(rwlp: *mut krwlock_t) -> c_int;
-    /// `rw_read_locked(9F)` — Architecture independent level 1 (DDI/DKI).
+    /// `rw_read_locked(9F)`. Architecture independent level 1 (DDI/DKI).
     pub fn rw_read_locked(rwlp: *mut krwlock_t) -> c_int;
 }

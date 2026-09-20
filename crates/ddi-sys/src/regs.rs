@@ -4,11 +4,11 @@
 use crate::types::*;
 
 unsafe extern "C" {
-    /// `ddi_dev_nregs(9F)` — illumos DDI specific (illumos DDI).
+    /// `ddi_dev_nregs(9F)`. illumos DDI specific (illumos DDI).
     pub fn ddi_dev_nregs(dip: dev_info_t, resultp: *mut c_int) -> c_int;
-    /// `ddi_dev_regsize(9F)` — illumos DDI specific (illumos DDI).
+    /// `ddi_dev_regsize(9F)`. illumos DDI specific (illumos DDI).
     pub fn ddi_dev_regsize(dip: dev_info_t, rnumber: uint_t, resultp: *mut off_t) -> c_int;
-    /// `ddi_regs_map_setup(9F)` — illumos DDI specific (illumos DDI).
+    /// `ddi_regs_map_setup(9F)`. illumos DDI specific (illumos DDI).
     pub fn ddi_regs_map_setup(
         dip: dev_info_t,
         rnumber: uint_t,
@@ -18,9 +18,9 @@ unsafe extern "C" {
         accattrp: *const ddi_device_acc_attr_t,
         handlep: *mut ddi_acc_handle_t,
     ) -> c_int;
-    /// `ddi_regs_map_free(9F)` — illumos DDI specific (illumos DDI).
+    /// `ddi_regs_map_free(9F)`. illumos DDI specific (illumos DDI).
     pub fn ddi_regs_map_free(handlep: *mut ddi_acc_handle_t);
-    /// `ddi_get8(9F)` — Interface Stability: Committed.
+    /// `ddi_get8(9F)`. Interface Stability: Committed.
     pub fn ddi_get8(handle: ddi_acc_handle_t, dev_addr: *const u8) -> u8;
     /// `ddi_get16(9F)`
     pub fn ddi_get16(handle: ddi_acc_handle_t, dev_addr: *const u16) -> u16;
@@ -36,6 +36,6 @@ unsafe extern "C" {
     pub fn ddi_put32(handle: ddi_acc_handle_t, dev_addr: *mut u32, value: u32);
     /// `ddi_put64(9F)`
     pub fn ddi_put64(handle: ddi_acc_handle_t, dev_addr: *mut u64, value: u64);
-    /// `ddi_check_acc_handle(9F)` — illumos DDI specific (illumos DDI).
+    /// `ddi_check_acc_handle(9F)`. illumos DDI specific (illumos DDI).
     pub fn ddi_check_acc_handle(handle: ddi_acc_handle_t) -> c_int;
 }
