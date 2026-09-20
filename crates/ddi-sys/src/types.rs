@@ -1,139 +1,162 @@
-//! `sys/types.h`, `sys/dditypes.h`: base and opaque types.
+//! Base types and opaque handles from `sys/types.h` and `sys/dditypes.h`.
+//!
+//! The first half of this module gives the C typedefs their Rust spelling so
+//! that the other modules can declare prototypes that read like the header.
+//! The second half declares the kernel structures a driver only ever sees
+//! through a pointer, using the [`opaque!`] macro, together with the handle
+//! typedefs built on them.
 
 use core::ffi;
 
 pub use ffi::{c_char, c_int, c_long, c_longlong, c_short, c_uchar, c_uint, c_ulong, c_ulonglong, c_ushort, c_void};
 
-/// `uint_t`
+/// The C `uint_t`, an unsigned 32-bit integer.
 pub type uint_t = c_uint;
-/// `ulong_t`
+/// The C `ulong_t`, an unsigned 64-bit integer under LP64.
 pub type ulong_t = c_ulong;
-/// `longlong_t`
+/// The C `longlong_t`, a signed 64-bit integer.
 pub type longlong_t = c_longlong;
-/// `size_t`
+/// The C `size_t`.
 pub type size_t = usize;
-/// `ssize_t`
+/// The C `ssize_t`.
 pub type ssize_t = isize;
-/// `intptr_t`
+/// The C `intptr_t`, an integer wide enough to hold a pointer.
 pub type intptr_t = isize;
-/// `uintptr_t`
+/// The C `uintptr_t`, an unsigned integer wide enough to hold a pointer.
 pub type uintptr_t = usize;
-/// `caddr_t`: core address.
+/// The C `caddr_t`, a pointer to bytes of kernel or user memory.
 pub type caddr_t = *mut c_char;
-/// `daddr_t`: disk address (`long`).
+/// The C `daddr_t`, a disk block address. It is a `long`.
 pub type daddr_t = c_long;
-/// `offset_t`: 64-bit file offset.
+/// The C `offset_t`, a 64-bit file offset.
 pub type offset_t = longlong_t;
-/// `off_t` under LP64.
+/// The C `off_t`, which is 64 bits wide under LP64.
 pub type off_t = c_long;
-/// `dev_t`: expanded device number (`ulong_t`).
+/// The C `dev_t`, a device number combining major and minor parts. It is a `ulong_t`.
 pub type dev_t = ulong_t;
-/// `major_t`
+/// The C `major_t`, the major part of a device number.
 pub type major_t = uint_t;
-/// `minor_t`
+/// The C `minor_t`, the minor part of a device number.
 pub type minor_t = uint_t;
-/// `pri_t`: scheduling priority.
+/// The C `pri_t`, a scheduling priority.
 pub type pri_t = c_short;
-/// `clock_t`: relative time in ticks (`long`).
+/// The C `clock_t`, a time interval in clock ticks. It is a `long`.
 pub type clock_t = c_long;
-/// `hrtime_t`: high-resolution time in nanoseconds.
+/// The C `hrtime_t`, a high-resolution time in nanoseconds.
 pub type hrtime_t = longlong_t;
-/// `boolean_t` (`B_FALSE`/`B_TRUE`).
+/// The C `boolean_t`, with the values [`B_FALSE`] and [`B_TRUE`].
 pub type boolean_t = c_int;
-/// `B_FALSE`
+/// The false value of `boolean_t`.
 pub const B_FALSE: boolean_t = 0;
-/// `B_TRUE`
+/// The true value of `boolean_t`.
 pub const B_TRUE: boolean_t = 1;
 
 opaque! {
-    /// `struct __dev_info`; `dev_info_t` is a pointer to it. See `Intro(9E)`.
+    /// The device node structure, `struct __dev_info`. Drivers receive it as
+    /// a `dev_info_t` pointer in `attach(9E)` and pass it to most `ddi_*`
+    /// functions. Its contents are private to the kernel.
     dev_info;
-    /// `cred_t`: user credentials, opaque to drivers. See `cred.h`, `drv_priv(9F)`.
+    /// The credentials of a caller, `cred_t`. Drivers query it through the
+    /// functions in [`crate::cred`] and never look inside.
     cred_t;
-    /// `struct modinfo`, passed to `_info(9E)`.
+    /// The `struct modinfo` that the kernel passes to `_info(9E)`. A driver
+    /// only forwards it to `mod_info(9F)`.
     modinfo;
-    /// `struct mod_ops` vtable (`mod_driverops`, `mod_miscops`, …).
+    /// A module operations vector, `struct mod_ops`. The kernel exports one
+    /// per module kind, such as `mod_driverops` for device drivers.
     mod_ops;
-    /// `struct bus_ops`: nexus operations, not bound in this crate.
+    /// The nexus operations vector, `struct bus_ops`. Leaf drivers set the
+    /// corresponding `dev_ops` field to NULL; this crate does not bind nexus
+    /// interfaces.
     bus_ops;
-    /// `struct streamtab`: bound by `ddi-streams-sys`; opaque here.
+    /// The STREAMS driver table, `struct streamtab`. It will be defined in a
+    /// separate `ddi-streams-sys` crate; here it exists only so that
+    /// `cb_ops.cb_str` has a pointer type.
     streamtab;
-    /// `struct buf`: `buf(9S)`. Opaque until the block-device family lands.
+    /// The block I/O request structure, `buf(9S)`. It stays opaque until the
+    /// block-device family is bound.
     buf;
-    /// `struct pollhead`: `chpoll(9E)`.
+    /// The poll head structure that `chpoll(9E)` fills in.
     pollhead;
-    /// `struct as`: address space, `segmap(9E)`.
+    /// A process address space, `struct as`, as passed to `segmap(9E)`. The C
+    /// name is a Rust keyword, hence the different spelling.
     addrspace;
-    /// `struct aio_req`: `aread(9E)`/`awrite(9E)`.
+    /// An asynchronous I/O request, `struct aio_req`, as passed to `aread(9E)`
+    /// and `awrite(9E)`.
     aio_req;
-    /// `struct __ddi_acc_handle`.
+    /// The structure behind a register access handle, `ddi_acc_handle_t`.
     __ddi_acc_handle;
-    /// `struct __ddi_dma_handle`.
+    /// The structure behind a DMA handle, `ddi_dma_handle_t`.
     __ddi_dma_handle;
-    /// `struct __ddi_periodic`.
+    /// The structure behind a periodic callback handle, `ddi_periodic_t`.
     __ddi_periodic;
-    /// `struct ddi_taskq`.
+    /// A task queue created by `ddi_taskq_create(9F)`.
     ddi_taskq_t;
-    /// `struct __ddi_softinfo` behind `ddi_softint_handle_t`.
+    /// The structure behind a soft interrupt handle, `ddi_softint_handle_t`.
     __ddi_softint_handle;
-    /// `struct __ddi_intr_handle`.
+    /// The structure behind an interrupt handle, `ddi_intr_handle_t`.
     __ddi_intr_handle;
 }
 
-/// `dev_info_t`
+/// A pointer to a device node. This is how `dev_info_t` is defined in C as well.
 pub type dev_info_t = *mut dev_info;
-/// `ddi_acc_handle_t`
+/// A register access handle returned by `ddi_regs_map_setup(9F)`.
 pub type ddi_acc_handle_t = *mut __ddi_acc_handle;
-/// `ddi_dma_handle_t`
+/// A DMA handle returned by `ddi_dma_alloc_handle(9F)`.
 pub type ddi_dma_handle_t = *mut __ddi_dma_handle;
-/// `ddi_periodic_t`
+/// A handle for a periodic callback registered with `ddi_periodic_add(9F)`.
 pub type ddi_periodic_t = *mut __ddi_periodic;
-/// `ddi_softint_handle_t`
+/// A soft interrupt handle returned by `ddi_intr_add_softint(9F)`.
 pub type ddi_softint_handle_t = *mut __ddi_softint_handle;
-/// `ddi_intr_handle_t`
+/// An interrupt handle returned by `ddi_intr_alloc(9F)`.
 pub type ddi_intr_handle_t = *mut __ddi_intr_handle;
-/// `devmap_cookie_t` (`ddidevmap.h`: `typedef void *devmap_cookie_t`).
+/// A device mapping cookie for the `devmap(9E)` framework. `ddidevmap.h`
+/// defines it as a plain `void *`.
 pub type devmap_cookie_t = *mut c_void;
 
-/// `ddi_device_acc_attr(9S)`: device register access attributes.
+/// Describes how device registers are to be accessed, `ddi_device_acc_attr(9S)`.
+/// A driver fills one in and passes it to `ddi_regs_map_setup(9F)`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ddi_device_acc_attr_t {
-    /// `DDI_DEVICE_ATTR_V0` or `DDI_DEVICE_ATTR_V1`.
+    /// The structure version, either `DDI_DEVICE_ATTR_V0` or `DDI_DEVICE_ATTR_V1`.
     pub devacc_attr_version: c_ushort,
-    /// `DDI_NEVERSWAP_ACC`, `DDI_STRUCTURE_LE_ACC`, `DDI_STRUCTURE_BE_ACC`.
+    /// The byte order of the device, one of `DDI_NEVERSWAP_ACC`,
+    /// `DDI_STRUCTURE_LE_ACC` or `DDI_STRUCTURE_BE_ACC`.
     pub devacc_attr_endian_flags: c_uchar,
-    /// `DDI_STRICTORDER_ACC` … `DDI_STORECACHING_OK_ACC`.
+    /// How strictly accesses must be ordered, from `DDI_STRICTORDER_ACC` to
+    /// `DDI_STORECACHING_OK_ACC`.
     pub devacc_attr_dataorder: c_uchar,
-    /// `DDI_DEFAULT_ACC`, `DDI_FLAGERR_ACC`, `DDI_CAUTIOUS_ACC` (V1 only).
+    /// How access errors are handled, one of `DDI_DEFAULT_ACC`,
+    /// `DDI_FLAGERR_ACC` or `DDI_CAUTIOUS_ACC`. Only meaningful with version 1.
     pub devacc_attr_access: c_uchar,
 }
 
-/// `DDI_DEVICE_ATTR_V0`
+/// Version 0 of the access attributes, without error handling (`DDI_DEVICE_ATTR_V0`).
 pub const DDI_DEVICE_ATTR_V0: c_ushort = 0x0001;
-/// `DDI_DEVICE_ATTR_V1`
+/// Version 1 of the access attributes, with the access error field (`DDI_DEVICE_ATTR_V1`).
 pub const DDI_DEVICE_ATTR_V1: c_ushort = 0x0002;
-/// `DDI_NEVERSWAP_ACC`
+/// The device uses the host byte order; never swap (`DDI_NEVERSWAP_ACC`).
 pub const DDI_NEVERSWAP_ACC: c_uchar = 0x00;
-/// `DDI_STRUCTURE_LE_ACC`
+/// The device is little-endian (`DDI_STRUCTURE_LE_ACC`).
 pub const DDI_STRUCTURE_LE_ACC: c_uchar = 0x01;
-/// `DDI_STRUCTURE_BE_ACC`
+/// The device is big-endian (`DDI_STRUCTURE_BE_ACC`).
 pub const DDI_STRUCTURE_BE_ACC: c_uchar = 0x02;
-/// `DDI_STRICTORDER_ACC`
+/// Accesses happen exactly in program order (`DDI_STRICTORDER_ACC`).
 pub const DDI_STRICTORDER_ACC: c_uchar = 0x00;
-/// `DDI_UNORDERED_OK_ACC`
+/// Accesses may be reordered (`DDI_UNORDERED_OK_ACC`).
 pub const DDI_UNORDERED_OK_ACC: c_uchar = 0x01;
-/// `DDI_MERGING_OK_ACC`
+/// Adjacent accesses may be merged (`DDI_MERGING_OK_ACC`).
 pub const DDI_MERGING_OK_ACC: c_uchar = 0x02;
-/// `DDI_LOADCACHING_OK_ACC`
+/// Loads may be cached (`DDI_LOADCACHING_OK_ACC`).
 pub const DDI_LOADCACHING_OK_ACC: c_uchar = 0x03;
-/// `DDI_STORECACHING_OK_ACC`
+/// Stores may be cached (`DDI_STORECACHING_OK_ACC`).
 pub const DDI_STORECACHING_OK_ACC: c_uchar = 0x04;
-/// `DDI_DEFAULT_ACC`
+/// Access errors take the default action, which is to panic (`DDI_DEFAULT_ACC`).
 pub const DDI_DEFAULT_ACC: c_uchar = 0x01;
-/// `DDI_FLAGERR_ACC`
+/// Access errors are recorded in the handle for the driver to check (`DDI_FLAGERR_ACC`).
 pub const DDI_FLAGERR_ACC: c_uchar = 0x02;
-/// `DDI_CAUTIOUS_ACC`
+/// Every access is protected against faults at the cost of speed (`DDI_CAUTIOUS_ACC`).
 pub const DDI_CAUTIOUS_ACC: c_uchar = 0x03;
 
 const _: () = assert!(core::mem::size_of::<ddi_device_acc_attr_t>() == 6);

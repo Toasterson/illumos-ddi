@@ -1,11 +1,13 @@
-//! `rnull`: a pseudo character device.
+//! A pseudo character device that behaves like `/dev/null` and keeps count.
 //!
-//! - `read(2)` returns EOF.
-//! - `write(2)` discards everything and counts it.
-//! - `RNULL_IOC_VERSION` returns the driver version.
-//! - `RNULL_IOC_STATS` returns the counters.
+//! Reading from the device returns end of file. Writing to it discards the
+//! data and counts the bytes. Three ioctls report the driver version, return
+//! the counters, and reset them; the reset requires the `PRIV_SYS_DEVICES`
+//! privilege. The driver exists to prove the toolchain from Rust source to a
+//! loaded kernel module and to serve as a template for other drivers.
 //!
-//! Load with `add_drv rnull`; the node is `/devices/pseudo/rnull@0:rnull`.
+//! Install it with `add_drv rnull`. The device node appears as
+//! `/devices/pseudo/rnull@0:rnull`.
 #![no_std]
 
 use ddi::prelude::*;
@@ -16,36 +18,38 @@ ddi::module! {
     ops: [char],
 }
 
-/// ioctl group letter.
+/// The ioctl group letter that all `rnull` commands share.
 const RNULL_IOC: u8 = b'N';
-/// `_IOR('N', 1, u32)`: driver version.
+/// Returns the driver version as a `u32`. Encoded as `_IOR('N', 1, u32)`.
 pub const RNULL_IOC_VERSION: IoctlCmd = IoctlCmd::ior::<u32>(RNULL_IOC, 1);
-/// `_IOR('N', 2, Stats)`: counters.
+/// Returns the counters as a [`Stats`]. Encoded as `_IOR('N', 2, Stats)`.
 pub const RNULL_IOC_STATS: IoctlCmd = IoctlCmd::ior::<Stats>(RNULL_IOC, 2);
-/// `_IO('N', 3)`: reset counters. Requires `PRIV_SYS_DEVICES`.
+/// Resets the counters. Requires the `PRIV_SYS_DEVICES` privilege. Encoded
+/// as `_IO('N', 3)`.
 pub const RNULL_IOC_RESET: IoctlCmd = IoctlCmd::io(RNULL_IOC, 3);
 
-/// Driver version reported by `RNULL_IOC_VERSION`.
+/// The version reported by [`RNULL_IOC_VERSION`].
 pub const VERSION: u32 = 1;
 
-/// Counters shared with userland; layout is the ABI.
+/// The counters, as copied out to userland. The layout of this structure is
+/// the ABI of [`RNULL_IOC_STATS`].
 #[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct Stats {
-    /// Number of `open(9E)` calls.
+    /// How often the device has been opened.
     pub opens: u64,
-    /// Number of `read(9E)` calls.
+    /// How often `read(9E)` has been called.
     pub reads: u64,
-    /// Number of `write(9E)` calls.
+    /// How often `write(9E)` has been called.
     pub writes: u64,
-    /// Bytes discarded by `write(9E)`.
+    /// How many bytes `write(9E)` has discarded in total.
     pub bytes_discarded: u64,
 }
 
-/// The module.
+/// The driver type that [`module!`] is invoked on.
 pub struct RNull;
 
-/// Per-instance state.
+/// The state of one attached instance. Dropping it removes the minor node.
 pub struct RNullInstance {
     dev: DevInfo,
     _node: MinorNode,

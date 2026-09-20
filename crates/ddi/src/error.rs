@@ -1,12 +1,21 @@
-//! The two return-code spaces of the DDI.
+//! The two return-code conventions of the DDI as two types.
+//!
+//! Entry points in `cb_ops(9S)` and most functions that deal with user
+//! requests report failure with an errno value. Entry points in `dev_ops(9S)`
+//! and the `ddi_*` functions that manage device state report `DDI_SUCCESS`
+//! or `DDI_FAILURE`. Mixing the two up is a classic mistake in C drivers.
+//! [`Errno`] and [`DdiError`] make it a type error instead.
 
 use core::fmt;
 use core::num::NonZeroI32;
 
 use crate::sys;
 
-/// A non-zero `errno` value, as returned by `cb_ops(9S)` entry points and
-/// by `9F` functions that document errno returns.
+/// A non-zero errno value.
+///
+/// This is what `cb_ops(9S)` entry points return, and what `9F` functions
+/// such as `uiomove` and `ddi_copyin` report. The associated constants cover
+/// the values a driver commonly needs; [`Errno::new`] accepts any other.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct Errno(NonZeroI32);
@@ -70,7 +79,7 @@ errnos!(
 );
 
 impl Errno {
-    /// Wrap a raw errno; `None` for 0.
+    /// Wraps a raw errno value. Returns `None` for 0, which is not an error.
     pub const fn new(raw: i32) -> Option<Errno> {
         match NonZeroI32::new(raw) {
             Some(n) => Some(Errno(n)),
@@ -78,12 +87,13 @@ impl Errno {
         }
     }
 
-    /// The raw errno value.
+    /// Returns the raw errno value.
     pub const fn get(self) -> i32 {
         self.0.get()
     }
 
-    /// Interpret a C return value that is `0` on success or an errno.
+    /// Interprets a C return value that is 0 on success and an errno
+    /// otherwise.
     pub const fn check(raw: i32) -> core::result::Result<(), Errno> {
         match Errno::new(raw) {
             None => Ok(()),
@@ -91,7 +101,8 @@ impl Errno {
         }
     }
 
-    /// Convert a `Result` back into the C convention.
+    /// Converts a `Result` back into the C convention, 0 for `Ok` and the
+    /// errno for `Err`.
     pub fn into_c(r: core::result::Result<(), Errno>) -> i32 {
         match r {
             Ok(()) => 0,
@@ -115,18 +126,23 @@ impl fmt::Display for Errno {
     }
 }
 
-/// `DDI_FAILURE`, as returned by `dev_ops(9S)` entry points and by `9F`
-/// functions documented to return `DDI_SUCCESS`/`DDI_FAILURE`.
+/// The failure of an operation in the `DDI_SUCCESS` and `DDI_FAILURE`
+/// convention.
+///
+/// This is what `dev_ops(9S)` entry points return and what `9F` functions
+/// such as `ddi_create_minor_node` report. The convention carries no reason,
+/// which is why this type has no payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct DdiError;
 
 impl DdiError {
-    /// Interpret a `DDI_SUCCESS`/`DDI_FAILURE` return.
+    /// Interprets a C return value in the `DDI_SUCCESS` and `DDI_FAILURE`
+    /// convention.
     pub const fn check(raw: i32) -> core::result::Result<(), DdiError> {
         if raw == sys::DDI_SUCCESS { Ok(()) } else { Err(DdiError) }
     }
 
-    /// Convert back to the C convention.
+    /// Converts a `Result` back into the C convention.
     pub const fn into_c(r: core::result::Result<(), DdiError>) -> i32 {
         match r {
             Ok(()) => sys::DDI_SUCCESS,
@@ -141,5 +157,5 @@ impl fmt::Display for DdiError {
     }
 }
 
-/// Result with [`Errno`] by default.
+/// A `Result` whose error type defaults to [`Errno`].
 pub type Result<T, E = Errno> = core::result::Result<T, E>;

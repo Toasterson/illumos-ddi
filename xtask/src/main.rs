@@ -1,14 +1,21 @@
-//! Build and link illumos kernel modules written against `ddi`.
+//! Builds and links illumos kernel modules written against `ddi`.
+//!
+//! Three subcommands are available. `build <pkg>` compiles the package for
+//! the kernel target with the pinned nightly and `-Zbuild-std`, producing
+//! `<pkg>.a`. `link <pkg>` runs on illumos only and links that archive into
+//! a kernel module with `ld -ztype=kmod`. `deps <pkg>` prints the module
+//! dependencies and mapfiles the crate graph implies.
 //!
 //! ```text
-//! cargo xtask build <pkg>   # nightly, -Zbuild-std, kernel target JSON → lib<pkg>.a
-//! cargo xtask link  <pkg>   # illumos only: ld -ztype=kmod -N … → <pkg> kernel module
-//! cargo xtask deps  <pkg>   # print the -N list and mapfiles implied by the crate graph
+//! cargo xtask build <pkg>
+//! cargo xtask link  <pkg>
+//! cargo xtask deps  <pkg>
 //! ```
 //!
-//! `-N` dependencies and mapfile names are collected from
-//! `[package.metadata.kmod]` of every crate in the package's dependency
-//! graph, so a driver never spells them out (DESIGN.md §6).
+//! The `-N` dependencies and the mapfile names are collected from the
+//! `[package.metadata.kmod]` table of every crate in the package's
+//! dependency graph. A driver therefore never spells them out itself; see
+//! section 6 of `docs/DESIGN.md`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -59,7 +66,8 @@ fn workspace_root() -> PathBuf {
     Path::new(s.trim()).parent().expect("workspace root").to_path_buf()
 }
 
-/// Walk `cargo metadata` and union every crate's `[package.metadata.kmod]`.
+/// Reads `cargo metadata` and merges the `[package.metadata.kmod]` tables of
+/// every workspace crate into one set of dependencies and mapfiles.
 fn deps(pkg: &str) -> Result<KmodDeps, String> {
     let out = Command::new("cargo")
         .args(["metadata", "--format-version=1", "--no-deps"])
@@ -146,7 +154,11 @@ fn link(pkg: &str) -> Result<(), String> {
     }
     println!("kernel module: {}", out.display());
     if let Some(c) = d.conf {
-        println!("conf: {} → /kernel/drv/{pkg}.conf; module → /kernel/{}/amd64/{pkg}", c.display(), d.class);
+        println!(
+            "install the conf file {} as /kernel/drv/{pkg}.conf and the module as /kernel/{}/amd64/{pkg}",
+            c.display(),
+            d.class
+        );
     }
     Ok(())
 }

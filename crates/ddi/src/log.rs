@@ -1,46 +1,52 @@
-//! `cmn_err(9F)` without allocation or varargs.
+//! Kernel logging without allocation.
 //!
-//! Messages are formatted into a fixed 256-byte buffer (kernel stacks are
-//! five pages) and passed through a single `%s`, so these macros are safe
-//! from any context, including the panic handler.
+//! `cmn_err(9F)` takes a C format string and a variable argument list,
+//! neither of which Rust formatting produces. The functions here format the
+//! message with `core::fmt` into a fixed 256-byte buffer on the stack and
+//! pass that buffer through a single `%s`. Kernel thread stacks are five
+//! pages, so the buffer is deliberately small. Nothing here allocates, which
+//! makes the macros usable from any context, including the panic handler.
 
 use core::fmt::{self, Write};
 
 use crate::sys;
 
-/// Size of the formatting buffer, including the NUL.
+/// The size of the formatting buffer in bytes, including the terminating NUL.
+/// Longer messages are truncated.
 pub const MSG_LEN: usize = 256;
 
-/// `cmn_err(9F)` level.
+/// The severity passed to `cmn_err(9F)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
 pub enum Level {
-    /// `CE_CONT`: no prefix, no automatic newline.
+    /// Continues a previous message. No prefix is added and no newline is
+    /// appended (`CE_CONT`).
     Cont = sys::CE_CONT,
-    /// `CE_NOTE`
+    /// A notice, prefixed with `NOTICE:` (`CE_NOTE`).
     Note = sys::CE_NOTE,
-    /// `CE_WARN`
+    /// A warning, prefixed with `WARNING:` (`CE_WARN`).
     Warn = sys::CE_WARN,
 }
 
-/// Fixed-capacity, NUL-terminated formatting buffer.
+/// A fixed-capacity, NUL-terminated buffer that implements `core::fmt::Write`.
 pub struct MsgBuf {
     buf: [u8; MSG_LEN],
     len: usize,
 }
 
 impl MsgBuf {
-    /// Empty buffer.
+    /// Creates an empty buffer.
     pub const fn new() -> MsgBuf {
         MsgBuf { buf: [0; MSG_LEN], len: 0 }
     }
 
-    /// Pointer to the NUL-terminated contents.
+    /// Returns a pointer to the NUL-terminated contents, suitable for passing
+    /// to a C `%s`.
     pub fn as_cstr_ptr(&self) -> *const sys::c_char {
         self.buf.as_ptr() as *const sys::c_char
     }
 
-    /// Formatted bytes (without the NUL).
+    /// Returns the formatted bytes without the terminating NUL.
     pub fn as_bytes(&self) -> &[u8] {
         &self.buf[..self.len]
     }
@@ -64,34 +70,43 @@ impl Write for MsgBuf {
     }
 }
 
-/// Format and emit through `cmn_err(9F)`.
+/// Formats the arguments and logs them through `cmn_err(9F)` at the given
+/// level. The [`kwarn!`](crate::kwarn!), [`knote!`](crate::knote!) and [`kcont!`](crate::kcont!) macros are the usual way
+/// to call this.
 pub fn cmn_err(level: Level, args: fmt::Arguments<'_>) {
     let mut b = MsgBuf::new();
     let _ = b.write_fmt(args);
     unsafe { sys::cmn_err(level as i32, c"%s".as_ptr(), b.as_cstr_ptr()) }
 }
 
-/// Format and emit through `dev_err(9F)`, prefixed with driver and instance.
+/// Formats the arguments and logs them through `dev_err(9F)`, which prefixes
+/// the message with the driver name and instance number.
 ///
 /// # Safety
-/// `dip` must be a valid, attached `dev_info_t`. Prefer [`crate::DevInfo::warn`].
+/// `dip` must be a valid `dev_info_t` of an attached instance. Drivers
+/// should call [`crate::DevInfo::warn`] or [`crate::DevInfo::note`] instead,
+/// which uphold this.
 pub unsafe fn dev_err(dip: sys::dev_info_t, level: Level, args: fmt::Arguments<'_>) {
     let mut b = MsgBuf::new();
     let _ = b.write_fmt(args);
     unsafe { sys::dev_err(dip, level as i32, c"%s".as_ptr(), b.as_cstr_ptr()) }
 }
 
-/// `cmn_err(CE_WARN, …)`.
+/// Logs a warning through `cmn_err(9F)` at `CE_WARN`. Takes the same
+/// arguments as `format!`.
 #[macro_export]
 macro_rules! kwarn {
     ($($arg:tt)*) => { $crate::log::cmn_err($crate::log::Level::Warn, format_args!($($arg)*)) };
 }
-/// `cmn_err(CE_NOTE, …)`.
+/// Logs a notice through `cmn_err(9F)` at `CE_NOTE`. Takes the same
+/// arguments as `format!`.
 #[macro_export]
 macro_rules! knote {
     ($($arg:tt)*) => { $crate::log::cmn_err($crate::log::Level::Note, format_args!($($arg)*)) };
 }
-/// `cmn_err(CE_CONT, …)`; include your own newline.
+/// Continues a message through `cmn_err(9F)` at `CE_CONT`. No newline is
+/// appended, so include one in the format string when the message is
+/// complete.
 #[macro_export]
 macro_rules! kcont {
     ($($arg:tt)*) => { $crate::log::cmn_err($crate::log::Level::Cont, format_args!($($arg)*)) };

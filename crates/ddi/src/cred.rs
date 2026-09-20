@@ -1,42 +1,45 @@
-//! `cred_t` as a borrowed handle.
+//! The caller's credentials as a borrowed handle.
 
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 use crate::sys;
 
-/// Credentials of the caller of an entry point. Valid for the duration of
-/// that call only.
+/// The credentials of the process or thread that called the current entry
+/// point. The handle is valid for the duration of that call only, which the
+/// lifetime parameter enforces.
 pub struct Cred<'a> {
     raw: NonNull<sys::cred_t>,
     _life: PhantomData<&'a sys::cred_t>,
 }
 
 impl<'a> Cred<'a> {
-    /// Wrap a `cred_t *` handed in by the kernel.
+    /// Wraps a `cred_t` pointer handed in by the kernel.
     ///
     /// # Safety
-    /// `p` must be a valid `cred_t` for lifetime `'a`.
+    /// `p` must point to a `cred_t` that stays valid for the lifetime `'a`.
     pub unsafe fn from_raw(p: *mut sys::cred_t) -> Cred<'a> {
         Cred { raw: unsafe { NonNull::new_unchecked(p) }, _life: PhantomData }
     }
 
-    /// The raw pointer, for passing to `9F` functions.
+    /// Returns the raw pointer, for `9F` functions that are not wrapped yet.
     pub fn as_raw(&self) -> *mut sys::cred_t {
         self.raw.as_ptr()
     }
 
-    /// `drv_priv(9F)`: does the caller hold `PRIV_SYS_DEVICES`?
+    /// Reports whether the caller holds the `PRIV_SYS_DEVICES` privilege,
+    /// using `drv_priv(9F)`. This is the check to perform before an ioctl
+    /// that changes device state.
     pub fn has_sys_devices_priv(&self) -> bool {
         unsafe { sys::drv_priv(self.raw.as_ptr()) == 0 }
     }
 
-    /// `crgetuid(9F)`.
+    /// Returns the caller's effective user ID, using `crgetuid(9F)`.
     pub fn uid(&self) -> u32 {
         unsafe { sys::crgetuid(self.raw.as_ptr()) }
     }
 
-    /// `crgetzoneid(9F)`.
+    /// Returns the ID of the caller's zone, using `crgetzoneid(9F)`.
     pub fn zone_id(&self) -> i32 {
         unsafe { sys::crgetzoneid(self.raw.as_ptr()) }
     }

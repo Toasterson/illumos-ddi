@@ -1,4 +1,4 @@
-//! `dev_info_t`, instance and minor numbers, minor nodes, properties.
+//! Device nodes, instance and minor numbers, minor nodes and properties.
 
 use core::ffi::CStr;
 use core::ptr::NonNull;
@@ -6,56 +6,59 @@ use core::ptr::NonNull;
 use crate::error::DdiError;
 use crate::sys;
 
-/// A driver instance number (`ddi_get_instance(9F)`).
+/// The instance number of a device node, as returned by
+/// `ddi_get_instance(9F)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Instance(pub i32);
 
-/// A minor number (`getminor(9F)`).
+/// The minor part of a device number, as returned by `getminor(9F)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Minor(pub u32);
 
-/// Flags passed to `open(9E)`/`close(9E)`.
+/// The open flags passed to `open(9E)` and `close(9E)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpenFlags(pub i32);
 
 impl OpenFlags {
-    /// `FREAD`
+    /// Reports whether the file was opened for reading (`FREAD`).
     pub fn read(self) -> bool {
         self.0 & sys::FREAD != 0
     }
-    /// `FWRITE`
+    /// Reports whether the file was opened for writing (`FWRITE`).
     pub fn write(self) -> bool {
         self.0 & sys::FWRITE != 0
     }
-    /// `FEXCL`
+    /// Reports whether exclusive access was requested (`FEXCL`).
     pub fn exclusive(self) -> bool {
         self.0 & sys::FEXCL != 0
     }
-    /// `FNDELAY | FNONBLOCK`
+    /// Reports whether non-blocking I/O was requested, in either the
+    /// historical or the POSIX form (`FNDELAY` or `FNONBLOCK`).
     pub fn nonblocking(self) -> bool {
         self.0 & (sys::FNDELAY | sys::FNONBLOCK) != 0
     }
 }
 
-/// The `otyp` argument of `open(9E)`/`close(9E)`.
+/// The `otyp` argument of `open(9E)` and `close(9E)`, which says how the
+/// device is being opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenType {
-    /// `OTYP_BLK`
+    /// As a block device (`OTYP_BLK`).
     Block,
-    /// `OTYP_MNT`
+    /// As a block device that is about to be mounted (`OTYP_MNT`).
     Mount,
-    /// `OTYP_CHR`
+    /// As a character device (`OTYP_CHR`).
     Char,
-    /// `OTYP_SWP`
+    /// As a swap device (`OTYP_SWP`).
     Swap,
-    /// `OTYP_LYR`
+    /// By another kernel module through LDI (`OTYP_LYR`).
     Layered,
-    /// Anything else the kernel might add.
+    /// A value this crate does not know, kept for forward compatibility.
     Other(i32),
 }
 
 impl OpenType {
-    /// Decode the raw `otyp`.
+    /// Decodes the raw `otyp` value.
     pub fn from_raw(otyp: i32) -> OpenType {
         match otyp {
             sys::OTYP_BLK => OpenType::Block,
@@ -70,9 +73,10 @@ impl OpenType {
 
 /// The device node of an attached instance.
 ///
-/// Created only by the framework glue. Valid from `attach(9E)` until the
-/// instance is detached; because the instance state is destroyed at detach,
-/// a `DevInfo` stored inside the instance cannot outlive its node.
+/// Only the framework glue creates a `DevInfo`. It is valid from `attach(9E)`
+/// until the instance is detached. Because the instance state is destroyed
+/// at detach, a `DevInfo` stored inside the instance cannot outlive the node
+/// it refers to, which is why the type is `Copy` and may be kept.
 #[derive(Clone, Copy)]
 pub struct DevInfo {
     raw: NonNull<sys::dev_info>,
@@ -82,7 +86,7 @@ unsafe impl Send for DevInfo {}
 unsafe impl Sync for DevInfo {}
 
 impl DevInfo {
-    /// Wrap a `dev_info_t`.
+    /// Wraps a `dev_info_t` pointer.
     ///
     /// # Safety
     /// `dip` must be the node the kernel passed to the current entry point.
@@ -90,40 +94,48 @@ impl DevInfo {
         DevInfo { raw: unsafe { NonNull::new_unchecked(dip) } }
     }
 
-    /// The raw `dev_info_t`, for `9F` calls not yet wrapped.
+    /// Returns the raw `dev_info_t`, for `9F` functions that are not wrapped
+    /// yet.
     pub fn as_raw(&self) -> sys::dev_info_t {
         self.raw.as_ptr()
     }
 
-    /// `ddi_get_instance(9F)`.
+    /// Returns the instance number, using `ddi_get_instance(9F)`.
     pub fn instance(&self) -> Instance {
         Instance(unsafe { sys::ddi_get_instance(self.as_raw()) })
     }
 
+    /// Returns the name of the driver bound to this node, using
     /// `ddi_driver_name(9F)`.
     pub fn driver_name(&self) -> &CStr {
         unsafe { CStr::from_ptr(sys::ddi_driver_name(self.as_raw())) }
     }
 
-    /// `ddi_report_dev(9F)`: log the "instance N attached" line.
+    /// Logs the line announcing that the instance is attached, using
+    /// `ddi_report_dev(9F)`. Conventionally called at the end of a successful
+    /// attach.
     pub fn report(&self) {
         unsafe { sys::ddi_report_dev(self.as_raw()) }
     }
 
-    /// `ddi_prop_get_int(9F)` with `DDI_PROP_DONTPASS` on this node.
+    /// Reads an integer property of this node, using `ddi_prop_get_int(9F)`
+    /// with `DDI_PROP_DONTPASS`. Returns `default` if the property does not
+    /// exist.
     pub fn prop_int(&self, name: &CStr, default: i32) -> i32 {
         unsafe {
             sys::ddi_prop_get_int(sys::DDI_DEV_T_ANY, self.as_raw(), sys::DDI_PROP_DONTPASS, name.as_ptr(), default)
         }
     }
 
+    /// Reports whether this node has the named property, using
     /// `ddi_prop_exists(9F)` with `DDI_PROP_DONTPASS`.
     pub fn prop_exists(&self, name: &CStr) -> bool {
         unsafe { sys::ddi_prop_exists(sys::DDI_DEV_T_ANY, self.as_raw(), sys::DDI_PROP_DONTPASS, name.as_ptr()) != 0 }
     }
 
-    /// `ddi_create_minor_node(9F)`. The node is removed when the returned
-    /// [`MinorNode`] is dropped, so keep it in the instance state.
+    /// Creates a minor node with `ddi_create_minor_node(9F)`. The node is
+    /// removed again when the returned [`MinorNode`] is dropped, so a driver
+    /// keeps it in its instance state for as long as the node should exist.
     pub fn create_minor_node(
         &self,
         name: &'static CStr,
@@ -144,23 +156,25 @@ impl DevInfo {
         DdiError::check(r).map(|()| MinorNode { dip: self.as_raw(), name })
     }
 
+    /// Logs a warning prefixed with the driver name and instance, using
     /// `dev_err(9F)` at `CE_WARN`.
     pub fn warn(&self, args: core::fmt::Arguments<'_>) {
         unsafe { crate::log::dev_err(self.as_raw(), crate::log::Level::Warn, args) }
     }
 
+    /// Logs a notice prefixed with the driver name and instance, using
     /// `dev_err(9F)` at `CE_NOTE`.
     pub fn note(&self, args: core::fmt::Arguments<'_>) {
         unsafe { crate::log::dev_err(self.as_raw(), crate::log::Level::Note, args) }
     }
 }
 
-/// Character or block minor node (`S_IFCHR`/`S_IFBLK`).
+/// Whether a minor node is a character or a block device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MinorKind {
-    /// `S_IFCHR`
+    /// A character device (`S_IFCHR`).
     Char,
-    /// `S_IFBLK`
+    /// A block device (`S_IFBLK`).
     Block,
 }
 
@@ -173,23 +187,24 @@ impl MinorKind {
     }
 }
 
-/// The `node_type` string of `ddi_create_minor_node(9F)`, which `devfsadm`
-/// uses to decide `/dev` link policy.
+/// The node type of a minor node, which `devfsadm` uses to decide how to
+/// create `/dev` links for it. Each variant stands for one of the
+/// `DDI_NT_*` strings passed to `ddi_create_minor_node(9F)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeType {
-    /// `DDI_PSEUDO`
+    /// A pseudo device (`DDI_PSEUDO`).
     Pseudo,
-    /// `DDI_NT_BLOCK`
+    /// A block device (`DDI_NT_BLOCK`).
     Block,
-    /// `DDI_NT_BLOCK_CHAN`
+    /// A block device addressed by channel (`DDI_NT_BLOCK_CHAN`).
     BlockChannel,
-    /// `DDI_NT_CD`
+    /// A CD-ROM (`DDI_NT_CD`).
     CdRom,
-    /// `DDI_NT_SERIAL`
+    /// A serial port (`DDI_NT_SERIAL`).
     Serial,
-    /// `DDI_NT_NET`
+    /// A network device (`DDI_NT_NET`).
     Net,
-    /// Any other `DDI_NT_*` string.
+    /// Any other node type string the driver wants to use.
     Custom(&'static CStr),
 }
 
@@ -207,7 +222,8 @@ impl NodeType {
     }
 }
 
-/// A minor node that exists while this value does.
+/// A minor node that exists for as long as this value does. Dropping it
+/// calls `ddi_remove_minor_node(9F)`.
 pub struct MinorNode {
     dip: sys::dev_info_t,
     name: &'static CStr,
@@ -217,7 +233,7 @@ unsafe impl Send for MinorNode {}
 unsafe impl Sync for MinorNode {}
 
 impl MinorNode {
-    /// The node name.
+    /// Returns the name the node was created with.
     pub fn name(&self) -> &'static CStr {
         self.name
     }

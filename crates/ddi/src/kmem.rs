@@ -1,4 +1,8 @@
-//! Kernel heap allocation with the sleep/no-sleep distinction in the API.
+//! Kernel heap allocation.
+//!
+//! The one decision that matters when allocating in the kernel is whether
+//! the caller may block. This module puts that decision into the function
+//! signatures rather than into a flag argument.
 
 use core::alloc::Layout;
 use core::mem::{align_of, size_of};
@@ -9,10 +13,11 @@ use crate::context::Sleepable;
 use crate::error::Errno;
 use crate::sys;
 
-/// A `T` allocated with `kmem_alloc(9F)` and freed with `kmem_free(9F)`.
+/// A `T` that lives in memory from `kmem_alloc(9F)` and is returned to the
+/// kernel with `kmem_free(9F)` when dropped.
 ///
-/// `kmem_alloc` guarantees only 8-byte alignment, so `T` must not require
-/// more; this is checked at compile time.
+/// `kmem_alloc` guarantees 8-byte alignment and nothing more, so `T` must
+/// not require a larger alignment. This is checked at compile time.
 pub struct KBox<T> {
     ptr: NonNull<T>,
 }
@@ -23,7 +28,8 @@ unsafe impl<T: Sync> Sync for KBox<T> {}
 impl<T> KBox<T> {
     const ALIGN_OK: () = assert!(align_of::<T>() <= 8, "kmem_alloc(9F) only guarantees 8-byte alignment");
 
-    /// Allocate with `KM_SLEEP`. Cannot fail; may block, hence the token.
+    /// Allocates with `KM_SLEEP`. The allocation cannot fail, but it may
+    /// block, which is why a [`Sleepable`] token is required.
     pub fn new(value: T, _ctx: &Sleepable) -> KBox<T> {
         match Self::alloc(value, sys::KM_SLEEP) {
             Ok(b) => b,
@@ -32,8 +38,8 @@ impl<T> KBox<T> {
         }
     }
 
-    /// Allocate with `KM_NOSLEEP`. Allowed from any context; may fail with
-    /// `ENOMEM`.
+    /// Allocates with `KM_NOSLEEP`. This is allowed from any context and
+    /// fails with `ENOMEM` when memory is not available right away.
     pub fn try_new(value: T) -> Result<KBox<T>, Errno> {
         Self::alloc(value, sys::KM_NOSLEEP)
     }
@@ -52,22 +58,25 @@ impl<T> KBox<T> {
         Ok(KBox { ptr })
     }
 
-    /// Leak the allocation, returning the raw pointer.
+    /// Gives up ownership and returns the raw pointer. The memory is not
+    /// freed until [`KBox::from_raw`] reconstitutes the box and drops it.
     pub fn into_raw(b: KBox<T>) -> *mut T {
         let p = b.ptr.as_ptr();
         core::mem::forget(b);
         p
     }
 
-    /// Reconstitute from [`KBox::into_raw`].
+    /// Takes ownership back from a pointer returned by [`KBox::into_raw`].
     ///
     /// # Safety
-    /// `p` must come from `into_raw` and not have been reconstituted before.
+    /// `p` must have come from `into_raw` and must not have been passed to
+    /// `from_raw` before.
     pub unsafe fn from_raw(p: *mut T) -> KBox<T> {
         KBox { ptr: unsafe { NonNull::new_unchecked(p) } }
     }
 
-    /// The layout `kmem_free(9F)` needs back.
+    /// Returns the layout of the allocation, which is what `kmem_free(9F)`
+    /// needs to be told when the box is dropped.
     pub fn layout() -> Layout {
         Layout::new::<T>()
     }
@@ -98,8 +107,12 @@ impl<T> Drop for KBox<T> {
     }
 }
 
-/// Optional `KM_SLEEP` global allocator. Prototype use only; see the
-/// `global-alloc-sleep` feature.
+/// An optional global allocator that always uses `KM_SLEEP`.
+///
+/// It exists so that prototypes can use `alloc::Box` and `alloc::Vec`, and
+/// it is unsound to allocate through it from interrupt context. The feature
+/// name, `global-alloc-sleep`, is meant to make that cost visible in the
+/// driver's `Cargo.toml`.
 #[cfg(feature = "global-alloc-sleep")]
 mod global {
     use core::alloc::{GlobalAlloc, Layout};

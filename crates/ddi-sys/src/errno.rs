@@ -1,5 +1,9 @@
-//! `sys/errno.h`: error numbers returned by `cb_ops(9S)` entry points and
-//! many `9F` functions. Generated from the gate header; do not edit by hand.
+//! Error numbers from `sys/errno.h`.
+//!
+//! `cb_ops(9S)` entry points and many `9F` functions report failure with one
+//! of these values. The table is generated from the gate header, with each
+//! constant's doc comment taken from the comment beside it in C. Do not edit
+//! it by hand; regenerate it instead.
 
 use crate::types::c_int;
 

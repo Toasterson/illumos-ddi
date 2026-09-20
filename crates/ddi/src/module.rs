@@ -1,14 +1,16 @@
-//! Module linkage and entry-point glue.
+//! Module linkage and the glue between kernel entry points and Rust traits.
 //!
-//! A driver implements [`Driver`] (and [`CharDevice`] for a character
-//! device) and invokes [`module!`]. The macro emits the C-ABI symbols the
-//! kernel looks for and the `modlinkage`/`dev_ops`/`cb_ops` statics; the
-//! generic functions in [`glue`] translate between the kernel's calling
-//! conventions and the traits.
+//! A driver implements [`Driver`], implements [`CharDevice`] as well if it
+//! is a character device, and invokes [`module!`](crate::module!). The macro emits the
+//! `_init`, `_fini` and `_info` symbols the kernel looks for, together with
+//! the `modlinkage`, `dev_ops` and `cb_ops` statics. The generic functions
+//! in [`glue`] translate between the kernel's calling conventions and the
+//! trait methods.
 //!
-//! Instance state lives in a soft-state slot (`ddi_soft_state_*(9F)`)
-//! indexed by instance number, which is what makes `getinfo(9E)` and the
-//! `dev_t → instance` mapping in `cb_ops` work without driver code.
+//! Instance state lives in a soft-state slot, managed through the
+//! `ddi_soft_state_*(9F)` functions and indexed by instance number. That is
+//! what lets the framework answer `getinfo(9E)` and map a `dev_t` to its
+//! instance in the `cb_ops` glue without any code in the driver.
 
 use core::cell::UnsafeCell;
 use core::ffi::CStr;
@@ -23,54 +25,69 @@ use crate::ioctl::{IoctlArg, IoctlCmd};
 use crate::sys;
 use crate::uio::Uio;
 
-/// What a kernel module must provide.
+/// The behaviour a kernel module has to provide.
+///
+/// Only [`attach`](Driver::attach) is mandatory. The other methods have
+/// defaults that are right for a driver without hardware state.
 pub trait Driver: Sized + 'static {
-    /// Per-instance state. Constructed by [`attach`](Driver::attach), owned
-    /// by the framework, dropped by [`detach`](Driver::detach).
+    /// The state of one attached instance. [`attach`](Driver::attach)
+    /// constructs it, the framework owns it, and [`detach`](Driver::detach)
+    /// receives it back to drop.
     type Instance: Send + Sync + 'static;
 
-    /// Text shown by `modinfo(8)`.
+    /// The description shown by `modinfo(8)`.
     const LINKINFO: &'static CStr;
 
-    /// Initial size hint for the soft-state table; it grows on demand.
+    /// A hint for the initial size of the soft-state table. The table grows
+    /// on demand, so this only affects the first allocation.
     const INSTANCE_HINT: usize = 1;
 
-    /// `attach(9E)` with `DDI_ATTACH`.
+    /// Handles `attach(9E)` with `DDI_ATTACH`. Creates the instance state
+    /// and, usually, the minor nodes.
     fn attach(dev: DevInfo, ctx: &Sleepable) -> Result<Self::Instance, DdiError>;
 
-    /// `detach(9E)` with `DDI_DETACH`. Return the instance in `Err` to
-    /// refuse; the framework keeps it attached.
+    /// Handles `detach(9E)` with `DDI_DETACH`. Returning the instance inside
+    /// `Err` refuses the detach, and the framework keeps the instance
+    /// attached. The default drops the instance and succeeds.
     fn detach(inst: Self::Instance, _dev: DevInfo, _ctx: &Sleepable) -> Result<(), (Self::Instance, DdiError)> {
         drop(inst);
         Ok(())
     }
 
-    /// `attach(9E)` with `DDI_RESUME`. Default: unsupported.
+    /// Handles `attach(9E)` with `DDI_RESUME`. The default reports that
+    /// resume is not supported.
     fn resume(_inst: &Self::Instance, _dev: DevInfo, _ctx: &Sleepable) -> Result<(), DdiError> {
         Err(DdiError)
     }
 
-    /// `detach(9E)` with `DDI_SUSPEND`. Default: unsupported.
+    /// Handles `detach(9E)` with `DDI_SUSPEND`. The default reports that
+    /// suspend is not supported.
     fn suspend(_inst: &Self::Instance, _dev: DevInfo, _ctx: &Sleepable) -> Result<(), DdiError> {
         Err(DdiError)
     }
 
-    /// `quiesce(9E)`: stop the hardware for fast reboot, with no locks or
-    /// blocking. Default: nothing to do (`ddi_quiesce_not_needed`).
+    /// Handles `quiesce(9E)`, which stops the hardware before a fast reboot.
+    /// The kernel calls it with interrupts disabled, so the implementation
+    /// must neither take locks nor block. The default reports that nothing
+    /// needs to be done, like `ddi_quiesce_not_needed(9F)`.
     fn quiesce(_inst: &Self::Instance, _dev: DevInfo) -> Result<(), DdiError> {
         Ok(())
     }
 
-    /// Map a minor number to the instance that owns it. Default: identity,
-    /// the common single-node-per-instance layout.
+    /// Maps a minor number to the instance that owns it. The default treats
+    /// the minor number as the instance number, which is the common layout
+    /// with one minor node per instance.
     fn instance_of_minor(minor: Minor) -> Option<Instance> {
         i32::try_from(minor.0).ok().map(Instance)
     }
 }
 
-/// Character-device entry points, on the instance type.
+/// The character device entry points, implemented on the instance type.
+///
+/// Every method has a default. `open` and `close` succeed, `read` and
+/// `write` fail with `ENXIO`, and `ioctl` fails with `ENOTTY`.
 pub trait CharDevice: Sized + Send + Sync + 'static {
-    /// `open(9E)`.
+    /// Handles `open(9E)`.
     fn open(
         &self,
         _minor: Minor,
@@ -81,7 +98,7 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
     ) -> Result<(), Errno> {
         Ok(())
     }
-    /// `close(9E)`.
+    /// Handles `close(9E)`.
     fn close(
         &self,
         _minor: Minor,
@@ -92,15 +109,17 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
     ) -> Result<(), Errno> {
         Ok(())
     }
-    /// `read(9E)`. Returning `Ok(())` with nothing copied is EOF.
+    /// Handles `read(9E)`. Returning `Ok(())` without copying anything
+    /// signals end of file to the caller.
     fn read(&self, _minor: Minor, _uio: &mut Uio<'_>, _cred: &Cred<'_>, _ctx: &Sleepable) -> Result<(), Errno> {
         Err(Errno::ENXIO)
     }
-    /// `write(9E)`.
+    /// Handles `write(9E)`.
     fn write(&self, _minor: Minor, _uio: &mut Uio<'_>, _cred: &Cred<'_>, _ctx: &Sleepable) -> Result<(), Errno> {
         Err(Errno::ENXIO)
     }
-    /// `ioctl(9E)`. `Ok(v)` becomes the syscall's return value.
+    /// Handles `ioctl(9E)`. The value inside `Ok` becomes the return value
+    /// of the system call.
     fn ioctl(
         &self,
         _minor: Minor,
@@ -113,25 +132,27 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
     }
 }
 
-/// Interior-mutable static storage for structures the kernel writes to
-/// (`dev_ops.devo_refcnt`, `modlinkage`).
+/// Static storage with interior mutability, for structures the kernel writes
+/// to after the module is loaded, such as `dev_ops` with its reference count
+/// and `modlinkage`.
 #[repr(transparent)]
 pub struct StaticCell<T>(UnsafeCell<T>);
 
 unsafe impl<T> Sync for StaticCell<T> {}
 
 impl<T> StaticCell<T> {
-    /// Wrap a value.
+    /// Wraps a value.
     pub const fn new(v: T) -> StaticCell<T> {
         StaticCell(UnsafeCell::new(v))
     }
-    /// Raw pointer to the contents.
+    /// Returns a raw pointer to the contents.
     pub const fn get(&self) -> *mut T {
         self.0.get()
     }
 }
 
-/// One soft-state item per instance.
+/// The soft-state item of one instance. It records the device node, whether
+/// the instance is live, and the instance state itself.
 #[repr(C)]
 pub struct Slot<I> {
     dip: sys::dev_info_t,
@@ -139,14 +160,15 @@ pub struct Slot<I> {
     inst: MaybeUninit<I>,
 }
 
-/// Per-module framework state; one static per `module!` invocation.
+/// The framework's state for one module. The [`module!`](crate::module!) macro creates one
+/// static of this type per invocation.
 pub struct ModuleState<D: Driver> {
     soft: AtomicPtr<sys::c_void>,
     _d: core::marker::PhantomData<fn() -> D>,
 }
 
 impl<D: Driver> ModuleState<D> {
-    /// Empty state.
+    /// Creates the state for a module that has not been initialised yet.
     pub const fn new() -> ModuleState<D> {
         ModuleState { soft: AtomicPtr::new(core::ptr::null_mut()), _d: core::marker::PhantomData }
     }
@@ -155,7 +177,7 @@ impl<D: Driver> ModuleState<D> {
         self.soft.load(Ordering::Acquire)
     }
 
-    /// Locate the live slot for `instance`.
+    /// Finds the soft-state slot for `instance` if it exists and is live.
     unsafe fn slot(&self, instance: Instance) -> Option<&Slot<D::Instance>> {
         let p = unsafe { sys::ddi_get_soft_state(self.soft(), instance.0) } as *const Slot<D::Instance>;
         if p.is_null() {
@@ -179,20 +201,22 @@ impl<D: Driver> Default for ModuleState<D> {
     }
 }
 
-/// Implemented by [`module!`] to give the glue access to the statics.
+/// Implemented by [`module!`](crate::module!) on the driver type so that the glue can reach
+/// the module's statics.
 pub trait ModuleDef: Driver {
-    /// The module's framework state.
+    /// Returns the module's framework state.
     fn state() -> &'static ModuleState<Self>;
-    /// The module's `modlinkage`.
+    /// Returns a pointer to the module's `modlinkage`.
     fn linkage() -> *mut sys::modlinkage;
 }
 
-/// C-ABI functions the macro points the kernel at. All are generic over
-/// the driver and monomorphised per module.
+/// The C-ABI functions the macro points the kernel at.
 ///
-/// Every function here is an entry point the kernel calls with arguments
-/// whose validity the DDI guarantees (`Intro(9E)`); they are `unsafe` only
-/// because a Rust caller could not uphold that. Driver code never calls them.
+/// All of them are generic over the driver type and are monomorphised once
+/// per module. Each is an entry point that the kernel calls with arguments
+/// whose validity the DDI guarantees (see `Intro(9E)`). They are `unsafe`
+/// only because a Rust caller could not uphold those guarantees. Driver
+/// code never calls them directly.
 #[allow(clippy::missing_safety_doc)]
 pub mod glue {
     use super::*;
@@ -201,7 +225,8 @@ pub mod glue {
         assert!(core::mem::align_of::<Slot<I>>() <= 8, "instance state must not need more than 8-byte alignment");
     }
 
-    /// `_init(9E)` body.
+    /// The body of `_init(9E)`. Creates the soft-state table and installs
+    /// the module.
     pub unsafe fn init<D: ModuleDef>() -> sys::c_int {
         const { align_ok::<D::Instance>() };
         let st = D::state();
@@ -220,7 +245,8 @@ pub mod glue {
         r
     }
 
-    /// `_fini(9E)` body.
+    /// The body of `_fini(9E)`. Removes the module and, if that succeeded,
+    /// destroys the soft-state table.
     pub unsafe fn fini<D: ModuleDef>() -> sys::c_int {
         let r = unsafe { sys::mod_remove(D::linkage()) };
         if r == 0 {
@@ -231,12 +257,13 @@ pub mod glue {
         r
     }
 
-    /// `_info(9E)` body.
+    /// The body of `_info(9E)`.
     pub unsafe fn info<D: ModuleDef>(modinfop: *mut sys::modinfo) -> sys::c_int {
         unsafe { sys::mod_info(D::linkage(), modinfop) }
     }
 
-    /// `getinfo(9E)`.
+    /// The `getinfo(9E)` entry point. Answers both the instance-number and
+    /// the device-node query from the soft-state table.
     pub unsafe extern "C" fn getinfo<D: ModuleDef>(
         _dip: sys::dev_info_t,
         cmd: sys::ddi_info_cmd_t,
@@ -262,7 +289,8 @@ pub mod glue {
         }
     }
 
-    /// `attach(9E)`.
+    /// The `attach(9E)` entry point. Allocates the soft-state slot, calls
+    /// [`Driver::attach`] and stores the result in the slot.
     pub unsafe extern "C" fn attach<D: ModuleDef>(dip: sys::dev_info_t, cmd: sys::ddi_attach_cmd_t) -> sys::c_int {
         let st = D::state();
         let dev = unsafe { DevInfo::from_raw(dip) };
@@ -295,7 +323,9 @@ pub mod glue {
         }
     }
 
-    /// `detach(9E)`.
+    /// The `detach(9E)` entry point. Takes the instance out of its slot,
+    /// calls [`Driver::detach`], and either frees the slot or, if the driver
+    /// refused, puts the instance back.
     pub unsafe extern "C" fn detach<D: ModuleDef>(dip: sys::dev_info_t, cmd: sys::ddi_detach_cmd_t) -> sys::c_int {
         let st = D::state();
         let dev = unsafe { DevInfo::from_raw(dip) };
@@ -336,7 +366,7 @@ pub mod glue {
         }
     }
 
-    /// `quiesce(9E)`.
+    /// The `quiesce(9E)` entry point.
     pub unsafe extern "C" fn quiesce<D: ModuleDef>(dip: sys::dev_info_t) -> sys::c_int {
         let dev = unsafe { DevInfo::from_raw(dip) };
         match unsafe { D::state().slot(dev.instance()) } {
@@ -345,7 +375,7 @@ pub mod glue {
         }
     }
 
-    /// `open(9E)` for [`CharDevice`].
+    /// The `open(9E)` entry point for a [`CharDevice`].
     pub unsafe extern "C" fn open<D: ModuleDef>(
         devp: *mut sys::dev_t,
         flag: sys::c_int,
@@ -361,7 +391,7 @@ pub mod glue {
         Errno::into_c(inst.open(minor, OpenFlags(flag), OpenType::from_raw(otyp), &cred, &ctx))
     }
 
-    /// `close(9E)` for [`CharDevice`].
+    /// The `close(9E)` entry point for a [`CharDevice`].
     pub unsafe extern "C" fn close<D: ModuleDef>(
         dev: sys::dev_t,
         flag: sys::c_int,
@@ -377,7 +407,7 @@ pub mod glue {
         Errno::into_c(inst.close(minor, OpenFlags(flag), OpenType::from_raw(otyp), &cred, &ctx))
     }
 
-    /// `read(9E)` for [`CharDevice`].
+    /// The `read(9E)` entry point for a [`CharDevice`].
     pub unsafe extern "C" fn read<D: ModuleDef>(
         dev: sys::dev_t,
         uiop: *mut sys::uio_t,
@@ -393,7 +423,7 @@ pub mod glue {
         Errno::into_c(inst.read(minor, &mut uio, &cred, &ctx))
     }
 
-    /// `write(9E)` for [`CharDevice`].
+    /// The `write(9E)` entry point for a [`CharDevice`].
     pub unsafe extern "C" fn write<D: ModuleDef>(
         dev: sys::dev_t,
         uiop: *mut sys::uio_t,
@@ -409,7 +439,7 @@ pub mod glue {
         Errno::into_c(inst.write(minor, &mut uio, &cred, &ctx))
     }
 
-    /// `ioctl(9E)` for [`CharDevice`].
+    /// The `ioctl(9E)` entry point for a [`CharDevice`].
     pub unsafe extern "C" fn ioctl<D: ModuleDef>(
         dev: sys::dev_t,
         cmd: sys::c_int,
@@ -435,27 +465,28 @@ pub mod glue {
         }
     }
 
-    /// Correctly typed `nulldev` for `identify(9E)`/`probe(9E)`.
+    /// A stub with the signature of `identify(9E)` and `probe(9E)` that
+    /// returns 0, standing in for the kernel's `nulldev`.
     pub unsafe extern "C" fn nulldev_dip(_dip: sys::dev_info_t) -> sys::c_int {
         0
     }
-    /// Correctly typed `nodev` for `devo_reset`.
+    /// A stub with the signature of `devo_reset` that returns `ENXIO`.
     pub unsafe extern "C" fn nodev_reset(_dip: sys::dev_info_t, _cmd: sys::ddi_reset_cmd_t) -> sys::c_int {
         sys::errno::ENXIO
     }
-    /// Correctly typed `nodev` for `power(9E)`.
+    /// A stub with the signature of `power(9E)` that returns `ENXIO`.
     pub unsafe extern "C" fn nodev_power(_dip: sys::dev_info_t, _c: sys::c_int, _l: sys::c_int) -> sys::c_int {
         sys::errno::ENXIO
     }
-    /// Correctly typed `nodev` for `strategy(9E)`.
+    /// A stub with the signature of `strategy(9E)` that returns `ENXIO`.
     pub unsafe extern "C" fn nodev_strategy(_bp: *mut sys::buf) -> sys::c_int {
         sys::errno::ENXIO
     }
-    /// Correctly typed `nodev` for `print(9E)`.
+    /// A stub with the signature of `print(9E)` that returns `ENXIO`.
     pub unsafe extern "C" fn nodev_print(_dev: sys::dev_t, _s: *mut sys::c_char) -> sys::c_int {
         sys::errno::ENXIO
     }
-    /// Correctly typed `nodev` for `dump(9E)`.
+    /// A stub with the signature of `dump(9E)` that returns `ENXIO`.
     pub unsafe extern "C" fn nodev_dump(
         _dev: sys::dev_t,
         _a: sys::caddr_t,
@@ -464,7 +495,7 @@ pub mod glue {
     ) -> sys::c_int {
         sys::errno::ENXIO
     }
-    /// Correctly typed `nodev` for `devmap(9E)`.
+    /// A stub with the signature of `devmap(9E)` that returns `ENXIO`.
     pub unsafe extern "C" fn nodev_devmap(
         _dev: sys::dev_t,
         _dhp: sys::devmap_cookie_t,
@@ -475,11 +506,11 @@ pub mod glue {
     ) -> sys::c_int {
         sys::errno::ENXIO
     }
-    /// Correctly typed `nodev` for `mmap(9E)`.
+    /// A stub with the signature of `mmap(9E)` that returns `ENXIO`.
     pub unsafe extern "C" fn nodev_mmap(_dev: sys::dev_t, _off: sys::off_t, _prot: sys::c_int) -> sys::c_int {
         sys::errno::ENXIO
     }
-    /// Correctly typed `nodev` for `segmap(9E)`.
+    /// A stub with the signature of `segmap(9E)` that returns `ENXIO`.
     pub unsafe extern "C" fn nodev_segmap(
         _dev: sys::dev_t,
         _off: sys::off_t,
@@ -493,7 +524,7 @@ pub mod glue {
     ) -> sys::c_int {
         sys::errno::ENXIO
     }
-    /// Correctly typed `nodev` for `open(9E)`.
+    /// A stub with the signature of `open(9E)` that returns `ENXIO`.
     pub unsafe extern "C" fn nodev_open(
         _devp: *mut sys::dev_t,
         _f: sys::c_int,
@@ -502,7 +533,7 @@ pub mod glue {
     ) -> sys::c_int {
         sys::errno::ENXIO
     }
-    /// Correctly typed `nodev` for `close(9E)`.
+    /// A stub with the signature of `close(9E)` that returns `ENXIO`.
     pub unsafe extern "C" fn nodev_close(
         _dev: sys::dev_t,
         _f: sys::c_int,
@@ -511,11 +542,12 @@ pub mod glue {
     ) -> sys::c_int {
         sys::errno::ENXIO
     }
-    /// Correctly typed `nodev` for `read(9E)`/`write(9E)`.
+    /// A stub with the shared signature of `read(9E)` and `write(9E)` that
+    /// returns `ENXIO`.
     pub unsafe extern "C" fn nodev_rw(_dev: sys::dev_t, _u: *mut sys::uio_t, _c: *mut sys::cred_t) -> sys::c_int {
         sys::errno::ENXIO
     }
-    /// Correctly typed `nodev` for `ioctl(9E)`.
+    /// A stub with the signature of `ioctl(9E)` that returns `ENXIO`.
     pub unsafe extern "C" fn nodev_ioctl(
         _dev: sys::dev_t,
         _cmd: sys::c_int,
@@ -526,18 +558,23 @@ pub mod glue {
     ) -> sys::c_int {
         sys::errno::ENXIO
     }
-    /// Correctly typed `nodev` for `aread(9E)`/`awrite(9E)`.
+    /// A stub with the shared signature of `aread(9E)` and `awrite(9E)` that
+    /// returns `ENXIO`.
     pub unsafe extern "C" fn nodev_aio(_dev: sys::dev_t, _a: *mut sys::aio_req, _c: *mut sys::cred_t) -> sys::c_int {
         sys::errno::ENXIO
     }
 }
 
-/// Define a kernel module for a [`Driver`].
+/// Defines a kernel module for a [`Driver`].
+///
+/// The `ops` list names the entry-point families the instance type
+/// implements. `[char]` wires the [`CharDevice`] methods into `cb_ops`; an
+/// empty list produces a module whose `cb_ops` slots all return `ENXIO`.
 ///
 /// ```ignore
 /// ddi::module! {
 ///     driver: RNull,
-///     ops: [char],          // or [] for a driver with no cb_ops
+///     ops: [char],
 /// }
 /// ```
 #[macro_export]
