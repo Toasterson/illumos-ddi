@@ -1,7 +1,7 @@
 //! `ioctl(9E)` commands and arguments.
 
 use core::marker::PhantomData;
-use core::mem::{size_of, MaybeUninit};
+use core::mem::{MaybeUninit, size_of};
 
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
@@ -83,7 +83,12 @@ impl<'a> IoctlArg<'a> {
     pub fn copy_in<T: FromBytes>(&self) -> Result<T, Errno> {
         let mut v = MaybeUninit::<T>::uninit();
         let r = unsafe {
-            sys::ddi_copyin(self.arg as *const sys::c_void, v.as_mut_ptr() as *mut sys::c_void, size_of::<T>(), self.mode)
+            sys::ddi_copyin(
+                self.arg as *const sys::c_void,
+                v.as_mut_ptr() as *mut sys::c_void,
+                size_of::<T>(),
+                self.mode,
+            )
         };
         if r != 0 {
             return Err(Errno::EFAULT);

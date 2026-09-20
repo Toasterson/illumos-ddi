@@ -2,8 +2,7 @@
 
 use core::ffi;
 
-pub use ffi::{c_char, c_int, c_long, c_longlong, c_short, c_uchar, c_uint, c_ulong, c_ulonglong,
-    c_ushort, c_void};
+pub use ffi::{c_char, c_int, c_long, c_longlong, c_short, c_uchar, c_uint, c_ulong, c_ulonglong, c_ushort, c_void};
 
 /// `uint_t`
 pub type uint_t = c_uint;

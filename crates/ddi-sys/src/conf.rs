@@ -24,6 +24,10 @@ unsafe extern "C" {
     pub fn nodev() -> c_int;
     /// `nochpoll(9F)` — illumos DDI specific (illumos DDI). Returns ENXIO.
     pub fn nochpoll(
-        dev: dev_t, events: c_short, anyyet: c_int, reventsp: *mut c_short, phpp: *mut *mut pollhead,
+        dev: dev_t,
+        events: c_short,
+        anyyet: c_int,
+        reventsp: *mut c_short,
+        phpp: *mut *mut pollhead,
     ) -> c_int;
 }

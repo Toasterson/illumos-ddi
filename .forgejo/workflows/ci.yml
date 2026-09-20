@@ -1,0 +1,39 @@
+# Solstice CI (Forgejo Actions). Constraints of the runner: no `uses:`, no
+# `needs:`, no `if:`, no artifacts; steps run as `sh -lc`; sccache is injected
+# automatically when on PATH.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check-hosted:
+    # Ubuntu + rustup stable: type-check and lint against the hosted illumos target.
+    runs-on: rust
+    steps:
+      - run: git clone --depth 1 --branch "${GITHUB_REF_NAME:-main}" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" src
+      - run: cd src && export SCCACHE_STARTUP_TIMEOUT=60 && rustup target add x86_64-unknown-illumos && cargo check --workspace --target x86_64-unknown-illumos
+      - run: cd src && cargo clippy --workspace --target x86_64-unknown-illumos -- -D warnings
+      - run: cd src && cargo fmt --all -- --check
+
+  kmod-illumos:
+    # Native illumos: install a pinned nightly (the only nightly-only step is
+    # -Zbuild-std), cross-build rnull for the kernel target, link it with the
+    # illumos ld as a real kernel module and check its dynamic section.
+    runs-on: illumos
+    steps:
+      - run: git clone --depth 1 --branch "${GITHUB_REF_NAME:-main}" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" src
+      - run: >
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          --default-toolchain nightly-2026-04-16 --component rust-src --no-modify-path
+      - run: >
+          cd src && export PATH="$HOME/.cargo/bin:$PATH" && export SCCACHE_STARTUP_TIMEOUT=60 &&
+          cargo +nightly-2026-04-16 build -p rnull --release
+          --target targets/x86_64-illumos-kmod.json
+          -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
+      - run: >
+          cd src && ld -ztype=kmod -z allextract
+          target/x86_64-illumos-kmod/release/rnull.a -o target/rnull &&
+          elfdump -d target/rnull && nm -u target/rnull

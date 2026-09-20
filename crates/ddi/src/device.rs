@@ -125,10 +125,21 @@ impl DevInfo {
     /// `ddi_create_minor_node(9F)`. The node is removed when the returned
     /// [`MinorNode`] is dropped, so keep it in the instance state.
     pub fn create_minor_node(
-        &self, name: &'static CStr, kind: MinorKind, minor: Minor, node_type: NodeType,
+        &self,
+        name: &'static CStr,
+        kind: MinorKind,
+        minor: Minor,
+        node_type: NodeType,
     ) -> Result<MinorNode, DdiError> {
         let r = unsafe {
-            sys::ddi_create_minor_node(self.as_raw(), name.as_ptr(), kind.spec_type(), minor.0, node_type.as_cstr().as_ptr(), 0)
+            sys::ddi_create_minor_node(
+                self.as_raw(),
+                name.as_ptr(),
+                kind.spec_type(),
+                minor.0,
+                node_type.as_cstr().as_ptr(),
+                0,
+            )
         };
         DdiError::check(r).map(|()| MinorNode { dip: self.as_raw(), name })
     }

@@ -51,7 +51,10 @@ struct KmodDeps {
 }
 
 fn workspace_root() -> PathBuf {
-    let out = Command::new("cargo").args(["locate-project", "--workspace", "--message-format=plain"]).output().expect("cargo");
+    let out = Command::new("cargo")
+        .args(["locate-project", "--workspace", "--message-format=plain"])
+        .output()
+        .expect("cargo");
     let s = String::from_utf8_lossy(&out.stdout);
     Path::new(s.trim()).parent().expect("workspace root").to_path_buf()
 }

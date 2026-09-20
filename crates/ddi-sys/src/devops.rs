@@ -136,27 +136,53 @@ pub type cb_read_t = unsafe extern "C" fn(dev: dev_t, uiop: *mut uio, credp: *mu
 pub type cb_write_t = unsafe extern "C" fn(dev: dev_t, uiop: *mut uio, credp: *mut cred_t) -> c_int;
 /// `ioctl(9E)`
 pub type cb_ioctl_t = unsafe extern "C" fn(
-    dev: dev_t, cmd: c_int, arg: intptr_t, mode: c_int, credp: *mut cred_t, rvalp: *mut c_int,
+    dev: dev_t,
+    cmd: c_int,
+    arg: intptr_t,
+    mode: c_int,
+    credp: *mut cred_t,
+    rvalp: *mut c_int,
 ) -> c_int;
 /// `devmap(9E)`
 pub type cb_devmap_t = unsafe extern "C" fn(
-    dev: dev_t, dhp: devmap_cookie_t, off: offset_t, len: size_t, maplen: *mut size_t, model: uint_t,
+    dev: dev_t,
+    dhp: devmap_cookie_t,
+    off: offset_t,
+    len: size_t,
+    maplen: *mut size_t,
+    model: uint_t,
 ) -> c_int;
 /// `mmap(9E)` (obsolete)
 pub type cb_mmap_t = unsafe extern "C" fn(dev: dev_t, off: off_t, prot: c_int) -> c_int;
 /// `segmap(9E)`
 pub type cb_segmap_t = unsafe extern "C" fn(
-    dev: dev_t, off: off_t, asp: *mut addrspace, addrp: *mut caddr_t, len: off_t, prot: c_uint,
-    maxprot: c_uint, flags: c_uint, credp: *mut cred_t,
+    dev: dev_t,
+    off: off_t,
+    asp: *mut addrspace,
+    addrp: *mut caddr_t,
+    len: off_t,
+    prot: c_uint,
+    maxprot: c_uint,
+    flags: c_uint,
+    credp: *mut cred_t,
 ) -> c_int;
 /// `chpoll(9E)`
 pub type cb_chpoll_t = unsafe extern "C" fn(
-    dev: dev_t, events: c_short, anyyet: c_int, reventsp: *mut c_short, phpp: *mut *mut pollhead,
+    dev: dev_t,
+    events: c_short,
+    anyyet: c_int,
+    reventsp: *mut c_short,
+    phpp: *mut *mut pollhead,
 ) -> c_int;
 /// `prop_op(9E)`
 pub type cb_prop_op_t = unsafe extern "C" fn(
-    dev: dev_t, dip: dev_info_t, prop_op: ddi_prop_op_t, mod_flags: c_int, name: *mut c_char,
-    valuep: caddr_t, length: *mut c_int,
+    dev: dev_t,
+    dip: dev_info_t,
+    prop_op: ddi_prop_op_t,
+    mod_flags: c_int,
+    name: *mut c_char,
+    valuep: caddr_t,
+    length: *mut c_int,
 ) -> c_int;
 /// `aread(9E)`
 pub type cb_aread_t = unsafe extern "C" fn(dev: dev_t, aio: *mut aio_req, credp: *mut cred_t) -> c_int;

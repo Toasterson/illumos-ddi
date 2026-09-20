@@ -14,7 +14,13 @@ pub type ddi_taskq_fn_t = unsafe extern "C" fn(arg: *mut c_void);
 
 unsafe extern "C" {
     /// `ddi_taskq_create(9F)` — illumos DDI specific (illumos DDI).
-    pub fn ddi_taskq_create(dip: dev_info_t, name: *const c_char, nthreads: c_int, pri: pri_t, cflags: uint_t) -> *mut ddi_taskq_t;
+    pub fn ddi_taskq_create(
+        dip: dev_info_t,
+        name: *const c_char,
+        nthreads: c_int,
+        pri: pri_t,
+        cflags: uint_t,
+    ) -> *mut ddi_taskq_t;
     /// `ddi_taskq_destroy(9F)` — illumos DDI specific (illumos DDI).
     pub fn ddi_taskq_destroy(tq: *mut ddi_taskq_t);
     /// `ddi_taskq_dispatch(9F)` — illumos DDI specific (illumos DDI). Returns `DDI_SUCCESS`/`DDI_FAILURE`.

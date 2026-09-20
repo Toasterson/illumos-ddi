@@ -76,7 +76,12 @@ unsafe extern "C" {
     // --- minor nodes -------------------------------------------------------
     /// `ddi_create_minor_node(9F)` — illumos DDI specific (illumos DDI).
     pub fn ddi_create_minor_node(
-        dip: dev_info_t, name: *const c_char, spec_type: c_int, minor_num: minor_t, node_type: *const c_char, flag: c_int,
+        dip: dev_info_t,
+        name: *const c_char,
+        spec_type: c_int,
+        minor_num: minor_t,
+        node_type: *const c_char,
+        flag: c_int,
     ) -> c_int;
     /// `ddi_remove_minor_node(9F)` — illumos DDI specific (illumos DDI).
     /// `name == NULL` removes all minor nodes of `dip`.
@@ -98,19 +103,45 @@ unsafe extern "C" {
     /// `ddi_prop_exists(9F)` — illumos DDI specific (illumos DDI).
     pub fn ddi_prop_exists(match_dev: dev_t, dip: dev_info_t, flags: uint_t, name: *const c_char) -> c_int;
     /// `ddi_prop_get_int(9F)` — illumos DDI specific (illumos DDI).
-    pub fn ddi_prop_get_int(match_dev: dev_t, dip: dev_info_t, flags: uint_t, name: *const c_char, defvalue: c_int) -> c_int;
+    pub fn ddi_prop_get_int(
+        match_dev: dev_t,
+        dip: dev_info_t,
+        flags: uint_t,
+        name: *const c_char,
+        defvalue: c_int,
+    ) -> c_int;
     /// `ddi_prop_get_int64(9F)` — illumos DDI specific (illumos DDI).
-    pub fn ddi_prop_get_int64(match_dev: dev_t, dip: dev_info_t, flags: uint_t, name: *const c_char, defvalue: i64) -> i64;
+    pub fn ddi_prop_get_int64(
+        match_dev: dev_t,
+        dip: dev_info_t,
+        flags: uint_t,
+        name: *const c_char,
+        defvalue: i64,
+    ) -> i64;
     /// `ddi_prop_lookup_string(9F)` — illumos DDI specific (illumos DDI).
-    pub fn ddi_prop_lookup_string(match_dev: dev_t, dip: dev_info_t, flags: uint_t, name: *const c_char, data: *mut *mut c_char) -> c_int;
+    pub fn ddi_prop_lookup_string(
+        match_dev: dev_t,
+        dip: dev_info_t,
+        flags: uint_t,
+        name: *const c_char,
+        data: *mut *mut c_char,
+    ) -> c_int;
     /// `ddi_prop_lookup_int_array(9F)` — illumos DDI specific (illumos DDI).
-    pub fn ddi_prop_lookup_int_array(match_dev: dev_t, dip: dev_info_t, flags: uint_t, name: *const c_char, data: *mut *mut c_int, nelements: *mut uint_t) -> c_int;
+    pub fn ddi_prop_lookup_int_array(
+        match_dev: dev_t,
+        dip: dev_info_t,
+        flags: uint_t,
+        name: *const c_char,
+        data: *mut *mut c_int,
+        nelements: *mut uint_t,
+    ) -> c_int;
     /// `ddi_prop_free(9F)` — illumos DDI specific (illumos DDI).
     pub fn ddi_prop_free(data: *mut c_void);
     /// `ddi_prop_update_int(9F)` — illumos DDI specific (illumos DDI).
     pub fn ddi_prop_update_int(match_dev: dev_t, dip: dev_info_t, name: *const c_char, data: c_int) -> c_int;
     /// `ddi_prop_update_string(9F)` — illumos DDI specific (illumos DDI).
-    pub fn ddi_prop_update_string(match_dev: dev_t, dip: dev_info_t, name: *const c_char, data: *const c_char) -> c_int;
+    pub fn ddi_prop_update_string(match_dev: dev_t, dip: dev_info_t, name: *const c_char, data: *const c_char)
+    -> c_int;
     /// `ddi_prop_remove(9F)` — illumos DDI specific (illumos DDI).
     pub fn ddi_prop_remove(dev: dev_t, dip: dev_info_t, name: *const c_char) -> c_int;
     /// `ddi_prop_remove_all(9F)` — illumos DDI specific (illumos DDI).
@@ -118,7 +149,13 @@ unsafe extern "C" {
     /// `ddi_prop_op(9F)` — illumos DDI specific (illumos DDI). The default
     /// `prop_op(9E)` implementation; signature matches `cb_prop_op_t`.
     pub fn ddi_prop_op(
-        dev: dev_t, dip: dev_info_t, prop_op: ddi_prop_op_t, mod_flags: c_int, name: *mut c_char, valuep: caddr_t, lengthp: *mut c_int,
+        dev: dev_t,
+        dip: dev_info_t,
+        prop_op: ddi_prop_op_t,
+        mod_flags: c_int,
+        name: *mut c_char,
+        valuep: caddr_t,
+        lengthp: *mut c_int,
     ) -> c_int;
 
     // --- user memory -------------------------------------------------------

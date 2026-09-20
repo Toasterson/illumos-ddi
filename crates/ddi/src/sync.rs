@@ -122,11 +122,12 @@ impl CondVar {
     /// `cv_reltimedwait(9F)` with a relative timeout in ticks. `false` if
     /// the timeout expired first.
     pub fn wait_timeout_ticks<'a, T>(
-        &self, guard: MutexGuard<'a, T>, ticks: sys::clock_t, _ctx: &Sleepable,
+        &self,
+        guard: MutexGuard<'a, T>,
+        ticks: sys::clock_t,
+        _ctx: &Sleepable,
     ) -> (MutexGuard<'a, T>, bool) {
-        let r = unsafe {
-            sys::cv_reltimedwait(self.raw.get(), guard.m.raw(), ticks, sys::time_res_t::TR_CLOCK_TICK)
-        };
+        let r = unsafe { sys::cv_reltimedwait(self.raw.get(), guard.m.raw(), ticks, sys::time_res_t::TR_CLOCK_TICK) };
         (guard, r >= 0)
     }
 

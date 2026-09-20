@@ -10,8 +10,13 @@ unsafe extern "C" {
     pub fn ddi_dev_regsize(dip: dev_info_t, rnumber: uint_t, resultp: *mut off_t) -> c_int;
     /// `ddi_regs_map_setup(9F)` — illumos DDI specific (illumos DDI).
     pub fn ddi_regs_map_setup(
-        dip: dev_info_t, rnumber: uint_t, addrp: *mut caddr_t, offset: offset_t, len: offset_t,
-        accattrp: *const ddi_device_acc_attr_t, handlep: *mut ddi_acc_handle_t,
+        dip: dev_info_t,
+        rnumber: uint_t,
+        addrp: *mut caddr_t,
+        offset: offset_t,
+        len: offset_t,
+        accattrp: *const ddi_device_acc_attr_t,
+        handlep: *mut ddi_acc_handle_t,
     ) -> c_int;
     /// `ddi_regs_map_free(9F)` — illumos DDI specific (illumos DDI).
     pub fn ddi_regs_map_free(handlep: *mut ddi_acc_handle_t);

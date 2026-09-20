@@ -71,11 +71,25 @@ pub trait Driver: Sized + 'static {
 /// Character-device entry points, on the instance type.
 pub trait CharDevice: Sized + Send + Sync + 'static {
     /// `open(9E)`.
-    fn open(&self, _minor: Minor, _flags: OpenFlags, _otyp: OpenType, _cred: &Cred<'_>, _ctx: &Sleepable) -> Result<(), Errno> {
+    fn open(
+        &self,
+        _minor: Minor,
+        _flags: OpenFlags,
+        _otyp: OpenType,
+        _cred: &Cred<'_>,
+        _ctx: &Sleepable,
+    ) -> Result<(), Errno> {
         Ok(())
     }
     /// `close(9E)`.
-    fn close(&self, _minor: Minor, _flags: OpenFlags, _otyp: OpenType, _cred: &Cred<'_>, _ctx: &Sleepable) -> Result<(), Errno> {
+    fn close(
+        &self,
+        _minor: Minor,
+        _flags: OpenFlags,
+        _otyp: OpenType,
+        _cred: &Cred<'_>,
+        _ctx: &Sleepable,
+    ) -> Result<(), Errno> {
         Ok(())
     }
     /// `read(9E)`. Returning `Ok(())` with nothing copied is EOF.
@@ -87,7 +101,14 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
         Err(Errno::ENXIO)
     }
     /// `ioctl(9E)`. `Ok(v)` becomes the syscall's return value.
-    fn ioctl(&self, _minor: Minor, _cmd: IoctlCmd, _arg: IoctlArg<'_>, _cred: &Cred<'_>, _ctx: &Sleepable) -> Result<i32, Errno> {
+    fn ioctl(
+        &self,
+        _minor: Minor,
+        _cmd: IoctlCmd,
+        _arg: IoctlArg<'_>,
+        _cred: &Cred<'_>,
+        _ctx: &Sleepable,
+    ) -> Result<i32, Errno> {
         Err(Errno::ENOTTY)
     }
 }
@@ -185,9 +206,8 @@ pub mod glue {
         const { align_ok::<D::Instance>() };
         let st = D::state();
         let mut soft: *mut sys::c_void = core::ptr::null_mut();
-        let r = unsafe {
-            sys::ddi_soft_state_init(&mut soft, core::mem::size_of::<Slot<D::Instance>>(), D::INSTANCE_HINT)
-        };
+        let r =
+            unsafe { sys::ddi_soft_state_init(&mut soft, core::mem::size_of::<Slot<D::Instance>>(), D::INSTANCE_HINT) };
         if r != 0 {
             return r;
         }
@@ -218,7 +238,10 @@ pub mod glue {
 
     /// `getinfo(9E)`.
     pub unsafe extern "C" fn getinfo<D: ModuleDef>(
-        _dip: sys::dev_info_t, cmd: sys::ddi_info_cmd_t, arg: *mut sys::c_void, result: *mut *mut sys::c_void,
+        _dip: sys::dev_info_t,
+        cmd: sys::ddi_info_cmd_t,
+        arg: *mut sys::c_void,
+        result: *mut *mut sys::c_void,
     ) -> sys::c_int {
         let dev = arg as usize as sys::dev_t;
         let minor = Minor(unsafe { sys::getminor(dev) });
@@ -324,7 +347,10 @@ pub mod glue {
 
     /// `open(9E)` for [`CharDevice`].
     pub unsafe extern "C" fn open<D: ModuleDef>(
-        devp: *mut sys::dev_t, flag: sys::c_int, otyp: sys::c_int, credp: *mut sys::cred_t,
+        devp: *mut sys::dev_t,
+        flag: sys::c_int,
+        otyp: sys::c_int,
+        credp: *mut sys::cred_t,
     ) -> sys::c_int
     where
         D::Instance: CharDevice,
@@ -337,7 +363,10 @@ pub mod glue {
 
     /// `close(9E)` for [`CharDevice`].
     pub unsafe extern "C" fn close<D: ModuleDef>(
-        dev: sys::dev_t, flag: sys::c_int, otyp: sys::c_int, credp: *mut sys::cred_t,
+        dev: sys::dev_t,
+        flag: sys::c_int,
+        otyp: sys::c_int,
+        credp: *mut sys::cred_t,
     ) -> sys::c_int
     where
         D::Instance: CharDevice,
@@ -349,7 +378,11 @@ pub mod glue {
     }
 
     /// `read(9E)` for [`CharDevice`].
-    pub unsafe extern "C" fn read<D: ModuleDef>(dev: sys::dev_t, uiop: *mut sys::uio_t, credp: *mut sys::cred_t) -> sys::c_int
+    pub unsafe extern "C" fn read<D: ModuleDef>(
+        dev: sys::dev_t,
+        uiop: *mut sys::uio_t,
+        credp: *mut sys::cred_t,
+    ) -> sys::c_int
     where
         D::Instance: CharDevice,
     {
@@ -361,7 +394,11 @@ pub mod glue {
     }
 
     /// `write(9E)` for [`CharDevice`].
-    pub unsafe extern "C" fn write<D: ModuleDef>(dev: sys::dev_t, uiop: *mut sys::uio_t, credp: *mut sys::cred_t) -> sys::c_int
+    pub unsafe extern "C" fn write<D: ModuleDef>(
+        dev: sys::dev_t,
+        uiop: *mut sys::uio_t,
+        credp: *mut sys::cred_t,
+    ) -> sys::c_int
     where
         D::Instance: CharDevice,
     {
@@ -374,7 +411,12 @@ pub mod glue {
 
     /// `ioctl(9E)` for [`CharDevice`].
     pub unsafe extern "C" fn ioctl<D: ModuleDef>(
-        dev: sys::dev_t, cmd: sys::c_int, arg: sys::intptr_t, mode: sys::c_int, credp: *mut sys::cred_t, rvalp: *mut sys::c_int,
+        dev: sys::dev_t,
+        cmd: sys::c_int,
+        arg: sys::intptr_t,
+        mode: sys::c_int,
+        credp: *mut sys::cred_t,
+        rvalp: *mut sys::c_int,
     ) -> sys::c_int
     where
         D::Instance: CharDevice,
@@ -414,12 +456,22 @@ pub mod glue {
         sys::errno::ENXIO
     }
     /// Correctly typed `nodev` for `dump(9E)`.
-    pub unsafe extern "C" fn nodev_dump(_dev: sys::dev_t, _a: sys::caddr_t, _b: sys::daddr_t, _n: sys::c_int) -> sys::c_int {
+    pub unsafe extern "C" fn nodev_dump(
+        _dev: sys::dev_t,
+        _a: sys::caddr_t,
+        _b: sys::daddr_t,
+        _n: sys::c_int,
+    ) -> sys::c_int {
         sys::errno::ENXIO
     }
     /// Correctly typed `nodev` for `devmap(9E)`.
     pub unsafe extern "C" fn nodev_devmap(
-        _dev: sys::dev_t, _dhp: sys::devmap_cookie_t, _off: sys::offset_t, _len: sys::size_t, _maplen: *mut sys::size_t, _model: sys::uint_t,
+        _dev: sys::dev_t,
+        _dhp: sys::devmap_cookie_t,
+        _off: sys::offset_t,
+        _len: sys::size_t,
+        _maplen: *mut sys::size_t,
+        _model: sys::uint_t,
     ) -> sys::c_int {
         sys::errno::ENXIO
     }
@@ -429,17 +481,34 @@ pub mod glue {
     }
     /// Correctly typed `nodev` for `segmap(9E)`.
     pub unsafe extern "C" fn nodev_segmap(
-        _dev: sys::dev_t, _off: sys::off_t, _asp: *mut sys::addrspace, _addrp: *mut sys::caddr_t, _len: sys::off_t,
-        _prot: sys::c_uint, _maxprot: sys::c_uint, _flags: sys::c_uint, _credp: *mut sys::cred_t,
+        _dev: sys::dev_t,
+        _off: sys::off_t,
+        _asp: *mut sys::addrspace,
+        _addrp: *mut sys::caddr_t,
+        _len: sys::off_t,
+        _prot: sys::c_uint,
+        _maxprot: sys::c_uint,
+        _flags: sys::c_uint,
+        _credp: *mut sys::cred_t,
     ) -> sys::c_int {
         sys::errno::ENXIO
     }
     /// Correctly typed `nodev` for `open(9E)`.
-    pub unsafe extern "C" fn nodev_open(_devp: *mut sys::dev_t, _f: sys::c_int, _o: sys::c_int, _c: *mut sys::cred_t) -> sys::c_int {
+    pub unsafe extern "C" fn nodev_open(
+        _devp: *mut sys::dev_t,
+        _f: sys::c_int,
+        _o: sys::c_int,
+        _c: *mut sys::cred_t,
+    ) -> sys::c_int {
         sys::errno::ENXIO
     }
     /// Correctly typed `nodev` for `close(9E)`.
-    pub unsafe extern "C" fn nodev_close(_dev: sys::dev_t, _f: sys::c_int, _o: sys::c_int, _c: *mut sys::cred_t) -> sys::c_int {
+    pub unsafe extern "C" fn nodev_close(
+        _dev: sys::dev_t,
+        _f: sys::c_int,
+        _o: sys::c_int,
+        _c: *mut sys::cred_t,
+    ) -> sys::c_int {
         sys::errno::ENXIO
     }
     /// Correctly typed `nodev` for `read(9E)`/`write(9E)`.
@@ -448,7 +517,12 @@ pub mod glue {
     }
     /// Correctly typed `nodev` for `ioctl(9E)`.
     pub unsafe extern "C" fn nodev_ioctl(
-        _dev: sys::dev_t, _cmd: sys::c_int, _arg: sys::intptr_t, _mode: sys::c_int, _c: *mut sys::cred_t, _rv: *mut sys::c_int,
+        _dev: sys::dev_t,
+        _cmd: sys::c_int,
+        _arg: sys::intptr_t,
+        _mode: sys::c_int,
+        _c: *mut sys::cred_t,
+        _rv: *mut sys::c_int,
     ) -> sys::c_int {
         sys::errno::ENXIO
     }

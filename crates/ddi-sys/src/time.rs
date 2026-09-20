@@ -27,7 +27,12 @@ unsafe extern "C" {
     /// `gethrtime(9F)` — illumos DDI specific (illumos DDI).
     pub fn gethrtime() -> hrtime_t;
     /// `ddi_periodic_add(9F)` — illumos DDI specific (illumos DDI).
-    pub fn ddi_periodic_add(func: ddi_periodic_fn_t, arg: *mut c_void, interval: hrtime_t, level: c_int) -> ddi_periodic_t;
+    pub fn ddi_periodic_add(
+        func: ddi_periodic_fn_t,
+        arg: *mut c_void,
+        interval: hrtime_t,
+        level: c_int,
+    ) -> ddi_periodic_t;
     /// `ddi_periodic_delete(9F)` — illumos DDI specific (illumos DDI).
     pub fn ddi_periodic_delete(request: ddi_periodic_t);
 }

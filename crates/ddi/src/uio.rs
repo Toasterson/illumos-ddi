@@ -41,9 +41,7 @@ impl<'a> Uio<'a> {
         if n == 0 {
             return Ok(0);
         }
-        let r = unsafe {
-            sys::uiomove(src.as_ptr() as *mut sys::c_void, n, sys::uio_rw_t::UIO_READ, self.raw)
-        };
+        let r = unsafe { sys::uiomove(src.as_ptr() as *mut sys::c_void, n, sys::uio_rw_t::UIO_READ, self.raw) };
         Errno::check(r).map(|()| n)
     }
 
@@ -54,9 +52,7 @@ impl<'a> Uio<'a> {
         if n == 0 {
             return Ok(0);
         }
-        let r = unsafe {
-            sys::uiomove(dst.as_mut_ptr() as *mut sys::c_void, n, sys::uio_rw_t::UIO_WRITE, self.raw)
-        };
+        let r = unsafe { sys::uiomove(dst.as_mut_ptr() as *mut sys::c_void, n, sys::uio_rw_t::UIO_WRITE, self.raw) };
         Errno::check(r).map(|()| n)
     }
 
