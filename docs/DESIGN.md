@@ -1,71 +1,134 @@
 # illumos DDI for Rust: design
 
-Status: draft, 2026-09-20; M0 and M1 done the same day (see §9). Working names throughout (`ddi-sys`, `ddi`,
-`ddi-<subsystem>`); naming is an open question, see §10.
+This document is a draft. It was written on 20 September 2026, and the first
+two milestones described in section 9 were reached the same day. The crate
+names used throughout (`ddi-sys`, `ddi`, `ddi-<subsystem>`) are working
+names. Naming is one of the open questions in section 10.
 
 ## 1. Goal
 
-Make it possible to write illumos kernel drivers in Rust against the
-*documented* Driver Developer Interface (DDI/DKI, section 9 of the manual),
-in a way that could be adopted by the illumos project itself rather than
-living as a per-driver pile of `extern "C"` declarations.
+We want to write illumos kernel drivers in Rust against the documented
+Driver Developer Interface, the DDI/DKI described in section 9 of the
+manual, in a form that the illumos project itself could adopt. Rust drivers
+for illumos exist today, but each one carries its own hand-written
+`extern "C"` declarations. That works for a single driver. It does not
+scale to a second one, and it gives the project nothing it can review or
+maintain.
 
-Two layers, mirroring the convention the illumos GitHub org already uses in
-userland (`libdevinfo-sys` + `devinfo-rs`, `libscf-sys` + `smf-rs`):
+The design has two layers. This mirrors the convention the illumos GitHub
+organisation already follows in userland, where `libdevinfo-sys` sits
+beneath `devinfo-rs` and `libscf-sys` beneath `smf-rs`.
 
-| Layer | Crates | Contents | `unsafe`? |
-| --- | --- | --- | --- |
-| raw | `ddi-sys`, `ddi-<subsys>-sys` | `#[repr(C)]` structs, opaque handles, constants, `extern "C"` prototypes. One item per section 9 man page. No logic. | all |
-| safe | `ddi`, `ddi-<subsys>` | Types whose shape encodes the rules the man pages state in prose: allocation context, lock ownership, DMA binding state, entry-point return conventions. | internally, never at the driver boundary |
+The raw layer consists of `ddi-sys` and one `ddi-<subsystem>-sys` crate per
+kernel framework. These crates contain `#[repr(C)]` structures, opaque
+handles, constants and `extern "C"` prototypes, one item per section 9
+manual page, and nothing else. Everything in them is unsafe by nature.
 
-Drivers depend on the safe layer only. A driver crate that contains
-`unsafe` outside of hardware register access should be a code smell.
+The safe layer consists of `ddi` and one `ddi-<subsystem>` crate per
+framework. Here the rules that the manual pages state in prose become the
+shape of types: which context may allocate, who holds a lock, whether DMA
+memory is bound, which return convention an entry point uses. These crates
+use `unsafe` internally and never expose it at the driver boundary.
 
-Non-goals for the first iterations: nexus drivers (`bus_ops`, `ndi_*`), the
-STREAMS framework beyond what MAC needs, filesystem modules (`modlfs`),
-SPARC.
+Drivers depend on the safe layer only. If a driver crate contains `unsafe`
+anywhere other than hardware register access, something in the safe layer
+is missing and should be added there.
+
+Some things are deliberately out of scope for the first iterations. Nexus
+drivers with their `bus_ops` and `ndi_*` interfaces are not covered. The
+STREAMS framework is bound only as far as MAC needs it. Filesystem modules
+(`modlfs`) are not covered. SPARC is not covered.
 
 ## 2. Prior art and what it teaches
 
-| Work | Year | Approach | Lesson |
-| --- | --- | --- | --- |
-| `rmustacc/rust-illumos-kmod-poc` (pchtemp port) | 2021 | Single `rmod.rs`, `rustc --emit=obj -C code-model=kernel -C no-redzone -C soft-float -C panic=abort`, structs and constants hand-typed inline; SDT probe via `__dtrace_probe_*` symbol | Proves the toolchain path is short. Everything else (`nodev` transmuted into typed slots, constants wrong by inspection) is what a real crate must fix. DTrace SDT from Rust works for free. |
-| `apopiak/LoReFS` (lofs clone) | 2018 | xargo, `x86_64-sun-solaris`, C shim + Rust | Filesystems need VFS/vnode which is outside the DDI. Confirms the "escape hatch tier" in §4. |
-| Oxide `opte/xde` + `crates/illumos-sys-hdrs` | 2022– | `no_std` staticlib, custom target JSON (`code-model: kernel`, `disable-redzone`, no SSE, soft-float, `frame-pointer: always`, `panic: abort`), `-Zbuild-std`, then `ld -ztype=kmod -Ndrv/dld -Nmisc/mac ... -z allextract xde.a`. Hand-written headers crate with a `kernel` feature; one 28k-line bindgen file (`ip.rs`) they regret. | This is the production-tested build recipe; copy it. Their header crate is *flat* (one `kernel.rs`) and mixes raw and safe (`impl kmutex_t { fn new }`), which is exactly what per-subsystem boundaries avoid. Their `GlobalAlloc` uses `KM_SLEEP` unconditionally and the panic handler allocates a `CString`, both unsound in interrupt context. `_Unwind_Resume` stub needed because `alloc` was not built with `panic=abort`. |
-| Oxide `propolis` `bhyve-api`/`viona-api` | 2021– | userland `no_std` FFI to kernel ioctls | Same discipline (repr(C), versioned ABI) but userland; not a template for DDI. |
-| Linux `rust/kernel` crate | 2022– | `bindgen` over kernel headers with the kernel's CFLAGS, `module!` macro, `Arc`/`Mutex`/`Pin` based safe layer, `ForeignOwnable`, typed error `Error`/`Result` | The safe-layer vocabulary (`module!`, driver traits, typed errors, pinned locks) is worth borrowing. bindgen-over-everything is not: illumos DDI is a *committed* ABI with man pages, so a curated hand-written surface is both feasible and more honest. |
+Four earlier efforts shaped this design. Each one taught something
+different.
+
+Robert Mustacchi's `rust-illumos-kmod-poc` from 2021 ports the `pchtemp`
+driver to a single `rmod.rs`, compiled with `rustc --emit=obj
+-C code-model=kernel -C no-redzone -C soft-float -C panic=abort`. All
+structures and constants are typed inline, `nodev` is transmuted into
+whichever slot needs it, and at least one constant is wrong on inspection.
+Its own README calls this "the wrong way, but faster". It proves that the
+distance from Rust source to a loadable module is short. It also shows, as
+a pleasant side effect, that a call to a `__dtrace_probe_*` symbol gives you
+an SDT probe for free.
+
+`apopiak/LoReFS` from 2018 is a lofs clone built with xargo for the old
+`x86_64-sun-solaris` target, with a C shim in front of the Rust code. Its
+main lesson is that a filesystem needs the VFS and vnode interfaces, which
+are not part of the DDI at all. That is why section 4 has an explicitly
+private tier.
+
+Oxide's `xde` driver in the `opte` repository, together with its
+`illumos-sys-hdrs` crate, is the only production Rust kernel module on
+illumos we know of. Its build recipe is the one to copy: a `no_std`
+static library, a custom target JSON with `code-model: kernel`,
+`disable-redzone`, no SSE, soft float, `frame-pointer: always` and
+`panic: abort`, then `-Zbuild-std`, and finally
+`ld -ztype=kmod -Ndrv/dld -Nmisc/mac ... -z allextract xde.a`. The header
+crate is less of a model. It is flat, a single `kernel.rs`, and it mixes
+raw declarations with safe helpers such as `impl kmutex_t { fn new }`. Its
+one bindgen-generated file, `ip.rs`, runs to 28,000 lines and the authors
+say in a comment that they regret it. Two details are worth avoiding
+outright. The `GlobalAlloc` implementation passes `KM_SLEEP`
+unconditionally, and the panic handler allocates a `CString`, both of which
+are unsound in interrupt context. The module also needs a stub for
+`_Unwind_Resume`, because `alloc` had not been built with `panic=abort`.
+
+Oxide's `propolis` also carries `bhyve-api` and `viona-api`, `no_std` FFI
+crates for kernel ioctls. They show the same discipline (`repr(C)`,
+versioned ABI) but from userland, so they are not a template for the DDI.
+
+The Linux kernel's `rust/kernel` crate is the most developed comparison.
+Its vocabulary for the safe layer is worth borrowing: a `module!` macro,
+driver traits, typed errors, pinned locks and the `ForeignOwnable` idea.
+Its approach to bindings is not. Linux runs bindgen over the kernel headers
+with the kernel's own CFLAGS because it has no stable internal ABI. illumos
+does have one. The DDI is a committed interface with manual pages, so a
+curated, hand-written surface is both feasible and more honest about what
+is actually supported.
 
 ## 3. Ground truth from the gate
 
-Everything below was read from `illumos/illumos-gate` at commit `0fb1d5d8d3`
-(local clone) and is what the design must satisfy.
+Everything in this section was read from `illumos/illumos-gate` at commit
+`0fb1d5d8d3`. These are the facts the design has to satisfy.
 
 ### 3.1 How a kernel module is linked
 
+The rule that links every kernel module lives at
 `usr/src/uts/Makefile.targ:40`:
 
 ```
 $(LD) -ztype=kmod $(LDFLAGS) -o $@ $(OBJECTS)
 ```
 
-then CTF merge against `genunix` and post-processing. `-ztype=kmod` (see
-`usr/src/cmd/sgs/libld/common/args.c`) implies `-r` **and** `-dy`, forbids an
-explicit `-d`, and emits a `DT_SUNW_KMOD` dynamic tag. Do not pass `-r`
-yourself. Dependencies on other modules are `-N drv/blkdev`, `-N misc/mac`
-etc., which become `DT_NEEDED` entries that `krtld` loads recursively. The
-old `_depends_on` string is a deprecated fallback and must not be used.
+It is followed by a CTF merge against `genunix` and the usual
+post-processing. The important flag is `-ztype=kmod`. Reading
+`usr/src/cmd/sgs/libld/common/args.c` shows what it does: it implies `-r`
+and `-dy` together, it makes an explicit `-d` a fatal error, and it emits a
+`DT_SUNW_KMOD` tag in the dynamic section. So nobody should pass `-r`
+themselves; the Writing Device Drivers book predates this flag.
 
-Optional but valuable: `-z defs -M usr/src/uts/common/mapfiles/ddi.mapfile`
-(plus `mac.mapfile`, …) makes the link fail if the module references any
-symbol outside the listed set. The gate's README for those mapfiles says
-they are not a formal stability statement, but the `ddi` mapfile is the
-closest thing to a machine-readable DDI symbol list, and it is what
-`i40e`, `e1000g` and others link against.
+Dependencies on other modules are expressed as `-N drv/blkdev`,
+`-N misc/mac` and so on. Each becomes a `DT_NEEDED` entry, and `krtld`
+follows them recursively at load time. The older mechanism, a `_depends_on`
+string in the module, is only consulted when no `DT_NEEDED` entries exist,
+and the kernel warns about it. New code should not use it.
+
+There is an optional and rather useful addition. Linking with
+`-z defs -M usr/src/uts/common/mapfiles/ddi.mapfile` (plus `mac.mapfile`
+and others as needed) makes the link fail if the module references any
+symbol outside the listed set. The README next to those mapfiles says they
+are not a formal statement of what is public. Even so, the `ddi` mapfile is
+the closest thing the gate has to a machine-readable list of DDI symbols,
+and drivers such as `i40e` and `e1000g` link against it.
 
 ### 3.2 Compile model for amd64 kernel code
 
-Effective flags after the `cw` wrapper (`usr/src/Makefile.master`,
-`usr/src/uts/Makefile.uts`, `usr/src/tools/cw/cw.c`):
+After the `cw` compiler wrapper has translated the Studio-style options
+(see `usr/src/Makefile.master`, `usr/src/uts/Makefile.uts` and
+`usr/src/tools/cw/cw.c`), amd64 kernel code is compiled with these flags:
 
 ```
 -m64 -ffreestanding -mcmodel=kernel -mno-red-zone -mno-mmx -mno-sse -msave-args
@@ -74,58 +137,81 @@ Effective flags after the `cw` wrapper (`usr/src/Makefile.master`,
 -D_KERNEL -D_SYSCALL32 -D_SYSCALL32_IMPL -D_ELF64 -D_DDI_STRICT -Dsun -D__sun -D__SVR4
 ```
 
-Consequences for Rust:
+Each of these has a consequence for Rust.
 
-- Custom target (`targets/x86_64-illumos-kmod.json`): `code-model: kernel`,
-  `relocation-model: static`, `disable-redzone: true`, features
-  `-mmx,-sse,-sse2,…,+soft-float`, `panic-strategy: abort`,
-  `frame-pointer: always`, `eh-frame-header: false`. This is Oxide's file
-  with the `os` left as `illumos` so `cfg(target_os = "illumos")` holds.
-- `core`/`alloc` must be rebuilt for that target: `-Zbuild-std=core,alloc
-  -Zbuild-std-features=compiler-builtins-mem -Zjson-target-spec` (nightly). This is the only
-  hard nightly dependency of the whole design; the crates themselves are
-  written for stable Rust (no `extern_types`, no `alloc_error_handler`).
-- `-D_DDI_STRICT` compiles `ddi_obsolete.h` out of every in-gate module.
-  Nothing from that header is bound.
-- Stack protector: the kernel exports `__stack_chk_fail`/`__stack_chk_guard`
-  (both in `ddi.mapfile`). Rust can opt in with `-Zstack-protector=strong`
-  later; off for now.
-- `-msave-args` has no Rust equivalent; `mdb ::stack` argument display is
-  lost for Rust frames. Frame pointers are kept so stack walking works.
-- Kernel thread stacks are 5 pages (`DEFAULTSTKSZ`, `i86pc/sys/machparam.h`).
-  No `format!` into `String`, no large arrays on the stack; the safe
-  layer's logging formats into a fixed 256-byte buffer.
-- Retpolines: Rust has `-Zretpoline`-class flags only on nightly; accept
-  the gap and document it (indirect calls from Rust into `cb_ops` are rare).
+The custom target in `targets/x86_64-illumos-kmod.json` sets
+`code-model: kernel`, `relocation-model: static`, `disable-redzone: true`,
+the feature string `-mmx,-sse,-sse2,…,+soft-float`,
+`panic-strategy: abort`, `frame-pointer: always` and
+`eh-frame-header: false`. It is Oxide's target file with `os` left as
+`illumos`, so that `cfg(target_os = "illumos")` holds in the crates.
+
+`core` and `alloc` have to be rebuilt for that target, which means
+`-Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
+-Zjson-target-spec` on a nightly toolchain. This is the only hard nightly
+dependency in the whole design. The crates themselves are written for
+stable Rust and use neither `extern_types` nor `alloc_error_handler`.
+
+`-D_DDI_STRICT` compiles `ddi_obsolete.h` out of every module in the gate.
+Nothing from that header is bound.
+
+The kernel is built with the stack protector and exports `__stack_chk_fail`
+and `__stack_chk_guard`, both listed in `ddi.mapfile`. Rust can opt in later
+with `-Zstack-protector=strong`. For now it is off.
+
+`-msave-args` has no Rust equivalent, so `mdb ::stack` will not display
+argument values for Rust frames. Frame pointers are kept, so stack walking
+itself works.
+
+Kernel thread stacks are five pages (`DEFAULTSTKSZ` in
+`i86pc/sys/machparam.h`). That rules out formatting into a `String` or
+placing large arrays on the stack. The logging in the safe layer formats
+into a fixed 256-byte buffer for this reason.
+
+Retpolines are available in Rust only through nightly flags. We accept the
+gap and document it. Indirect calls from Rust into `cb_ops` are rare in
+practice.
 
 ### 3.3 What "public DDI" means, mechanically
 
-Three signals, none sufficient alone (see the inventory in
-`docs/ddi-inventory.md`):
+There are three signals, and none of them is sufficient on its own. The
+inventory in `docs/ddi-inventory.md` has the numbers.
 
-1. `.SH INTERFACE LEVEL` in `usr/src/man/man9{e,f,s}`: either
-   `Architecture independent level 1 (DDI/DKI).` or
-   `illumos DDI specific (illumos DDI).`, optionally followed by
-   "This interface is obsolete". Present on 92–99 % of pages.
-2. `Interface Stability` row in `ATTRIBUTES` (Committed / Evolving /
-   Obsolete / Private / Volatile). Present on a minority of pages.
-3. Membership in `usr/src/uts/common/mapfiles/*.mapfile`.
+The first is the `.SH INTERFACE LEVEL` section of the manual pages in
+`usr/src/man/man9{e,f,s}`. It reads either "Architecture independent level 1
+(DDI/DKI)." or "illumos DDI specific (illumos DDI).", sometimes followed by
+a note that the interface is obsolete. Between 92 and 99 percent of the
+pages have this section.
 
-The mapfile is *incomplete* relative to the man pages: `getminor(9F)`,
-`getmajor(9F)`, `makedevice(9F)`, `ddi_prop_exists(9F)`,
+The second is the `Interface Stability` row in the `ATTRIBUTES` table, with
+values Committed, Evolving, Obsolete, Private or Volatile. Only a minority
+of pages carry it.
+
+The third is membership in one of the `usr/src/uts/common/mapfiles/*.mapfile`
+files.
+
+The mapfile turns out to be incomplete relative to the manual pages.
+`getminor(9F)`, `getmajor(9F)`, `makedevice(9F)`, `ddi_prop_exists(9F)`,
 `ddi_model_convert_from(9F)`, `rw_read_locked(9F)`, `crgetuid(9F)`,
-`uioskip(9F)` and `vpanic` are documented DDI but absent from `ddi.mapfile`
-(checked 2026-09-20; `-z defs -M ddi.mapfile` on `rnull` fails on exactly
-`getminor` and `uioskip`). So the mapfile can gate a link (`-z defs`) but cannot define
-the binding surface; `xtask lint-man` should report "documented but not in
-mapfile" so the gaps can be sent upstream as mapfile additions.
+`uioskip(9F)` and `vpanic` are all documented DDI and all absent from
+`ddi.mapfile` as of 20 September 2026. Linking `rnull` with
+`-z defs -M ddi.mapfile` fails on exactly two of them, `getminor` and
+`uioskip`. The conclusion is that the mapfile can gate a link but cannot
+define the binding surface. The planned `xtask lint-man` should report
+"documented but not in mapfile" so that the gaps can be sent upstream as
+mapfile additions.
 
-Header names are not a signal: `ddi_impldefs.h` and `mac_impl.h` install
-into `/usr/include/sys` next to `sunddi.h`. The `*_impl.h`, `*_impldefs.h`,
-`esunddi.h` ("drivers calling these functions are not portable") naming is,
-however, reliable for the negative case.
+Header names, on the other hand, tell you nothing about what is public.
+`ddi_impldefs.h` and `mac_impl.h` are installed into `/usr/include/sys`
+right next to `sunddi.h`. The naming does work in the negative direction:
+anything called `*_impl.h`, `*_impldefs.h` or `esunddi.h` (whose own
+comment says that "drivers calling these functions are not portable") is
+private.
 
 ### 3.4 Fixed ABI facts a binding must hard-code (amd64)
+
+A few layouts are part of the ABI and have to be written down in the
+bindings. The table lists them with their source in the gate.
 
 | Type | Layout | Source |
 | --- | --- | --- |
@@ -139,361 +225,468 @@ however, reliable for the negative case.
 | `ddi_device_acc_attr_t` | `u16 version; u8 endian; u8 dataorder; u8 access` | `sys/dditypes.h` |
 | `struct uio` | documented fields in `uio(9S)`; layout in `sys/uio.h` | must be layout-tested |
 
-These are the things a CTF-driven layout test (§8.1) must pin. Spot-checked
-against the running kernel on `oibldofgate` (illumos-cda5b9a49f) with
-`mdb -k`: `struct dev_ops` 0x58, `devo_attach` at 0x20, `struct cb_ops` 0x88,
-`struct uio` 0x30 with `uio_resid` at 0x28, `kmutex_t` 8, `kcondvar_t` 2,
-`struct modlinkage` 0x40. All match the const assertions in `ddi-sys`.
+These are exactly the things the CTF-driven layout test in section 8.1 has
+to pin. They were spot-checked against the running kernel on `oibldofgate`
+(build `illumos-cda5b9a49f`) with `mdb -k`. `struct dev_ops` is 0x58 bytes
+with `devo_attach` at offset 0x20, `struct cb_ops` is 0x88, `struct uio` is
+0x30 with `uio_resid` at 0x28, `kmutex_t` is 8, `kcondvar_t` is 2 and
+`struct modlinkage` is 0x40. All of them match the constant assertions in
+`ddi-sys`.
 
 ## 4. Crate boundaries
 
-One `-sys` crate per documented interface family. The boundary test is:
-"does this family have its own man 9 entry-point set or `9F` prefix, its
-own header(s), and usually its own kernel module that a driver would name
-with `-N`?" The crate then *owns* three things: the symbols it declares,
-the `-N` dependency it implies, and the mapfile it can be checked against.
+There is one `-sys` crate per documented interface family. The test for
+drawing a boundary is a practical one. Does this family have its own set of
+section 9 entry points or its own `9F` prefix, its own headers, and
+usually its own kernel module that a driver would name with `-N`? If so,
+it gets a crate. That crate then owns three things: the symbols it
+declares, the `-N` dependency it implies, and the mapfile it can be
+checked against.
 
 | Crate | Headers (`usr/src/uts/common/sys/`) | man 9 family | kmod dep (`-N`) | mapfile | Tier |
 | --- | --- | --- | --- | --- | --- |
 | `ddi-sys` | `types.h`, `errno.h`, `param.h`, `modctl.h`, `devops.h`, `conf.h`, `dditypes.h`, `sunddi.h` (core subset), `ddipropdefs.h` (enums only), `cred.h`, `uio.h`, `buf.h`, `open.h`, `file.h` (flags), `stat.h` (`S_IF*`), `cmn_err.h`, `kmem.h`, `mutex.h`, `condvar.h`, `rwlock.h`, `semaphore.h`, `ddi_periodic.h` (API only), `kstat.h`, `sysmacros.h`/`atomic.h` as needed | `Intro(9E)`, `dev_ops(9S)`, `cb_ops(9S)`, `modl*(9S)`, `ddi_*`, `kmem_*`, `mutex_*`, `cv_*`, `rw_*`, `cmn_err`, `uio*`, `bio*`, `kstat_*`, `ddi_prop_*`, `ddi_soft_state_*`, `ddi_taskq_*`, `ddi_periodic_*` | none (genunix/unix) | `ddi` | Committed |
 | `ddi-sys` feature `intr` | `ddi_intr.h` | `ddi_intr_*(9F)` (14 pages) | none | `ddi` | Committed |
 | `ddi-sys` feature `dma` | `ddidmareq.h`, `sunddi.h` DMA subset | `ddi_dma_*(9F)`, `ddi_dma_attr(9S)`, `ddi_dma_cookie(9S)` | none | `ddi` | Committed |
-| `ddi-sys` feature `regs` | `sunddi.h` regs subset, `dditypes.h` | `ddi_regs_map_setup(9F)`, `ddi_get8(9F)`… | none | `ddi` | Committed |
+| `ddi-sys` feature `regs` | `sunddi.h` regs subset, `dditypes.h` | `ddi_regs_map_setup(9F)`, `ddi_get8(9F)` and family | none | `ddi` | Committed |
 | `ddi-sys` feature `fm` | `ddifm.h` | `ddi_fm_*(9F)`, `ddi_fm_error(9S)` | none | `ddi` | Committed |
-| `ddi-ufm-sys` | `ddi_ufm.h` | `ddi_ufm(9E)`, `ddi_ufm_*(9F)` | none | – | Committed, versioned |
+| `ddi-ufm-sys` | `ddi_ufm.h` | `ddi_ufm(9E)`, `ddi_ufm_*(9F)` | none | none | Committed, versioned |
 | `ddi-pci-sys` | `pci.h` (constants), `sunddi.h` `pci_config_*` | `pci_config_*(9F)` | none | `ddi` | Committed |
-| `ddi-ldi-sys` | `sunldi.h` | `ldi_*(9F)` (24 pages) | none | – | Committed |
-| `ddi-mac-sys` | `mac_provider.h`, `mac.h`, `mac_ether.h` | `mac(9E)`, `mc_*(9E)`, `mac_*(9F)`, `mac_register(9S)`, `mac_callbacks(9S)` | `misc/mac` | `mac` | Committed (versioned `MAC_VERSION_V1`) |
-| `ddi-streams-sys` | `stream.h`, `strsun.h`, `stropts.h` | `queue(9S)`, `msgb(9S)`, `qinit(9S)`, `put(9E)`, `srv(9E)`, `q*(9F)`, `mi*(9F)`, `allocb(9F)`… | none | `ddi` | Committed |
-| `ddi-blkdev-sys` | `blkdev.h` | `bd_*(9F)` (only header + comments today, no man pages) | `drv/blkdev` | – | Committed by convention, **undocumented**: first job is to write `blkdev(9E)` man pages upstream |
-| `ddi-scsa-sys` | `scsi/scsi.h` and the public `scsi/scsi_*.h` (not `scsi/impl/`) | `scsi_*(9F)` (41), `tran_*(9E)` (14), `scsi_hba_tran(9S)`… | `misc/scsi` | – | Committed |
-| `ddi-usba-sys` | `usb/usba.h`, `usb/usbai.h` | `usb_*(9F)` (29), `usb_*(9S)` | `misc/usba` | – | Committed |
-| `ddi-usba-hcdi-sys` | `usb/usba/hcdi.h` | `usba_hcdi_*(9E)` (12), `usba_*(9F)` | `misc/usba` | – | Committed |
-| `ddi-ksensor-sys` | `sensors.h` | `ksensor(9E)`, `ksensor_*(9F)` | `misc/ksensor` | `ksensor` | **Evolving** (header says so) |
-| `ddi-cmlb-sys` | `cmlb.h` | none | `misc/cmlb` | – | Private-by-omission |
-| `illumos-kernel-private-sys` | `virtio.h` (`io/virtio/`), `vnode.h`/`vfs.h`, `taskq.h` (raw), `id_space.h`, `zone.h`, `esunddi.h` items | none | varies | – | **Private**: pinned to a gate commit, only usable with `--features unstable-gate-<hash>` |
+| `ddi-ldi-sys` | `sunldi.h` | `ldi_*(9F)` (24 pages) | none | none | Committed |
+| `ddi-mac-sys` | `mac_provider.h`, `mac.h`, `mac_ether.h` | `mac(9E)`, `mc_*(9E)`, `mac_*(9F)`, `mac_register(9S)`, `mac_callbacks(9S)` | `misc/mac` | `mac` | Committed, versioned (`MAC_VERSION_V1`) |
+| `ddi-streams-sys` | `stream.h`, `strsun.h`, `stropts.h` | `queue(9S)`, `msgb(9S)`, `qinit(9S)`, `put(9E)`, `srv(9E)`, `q*(9F)`, `mi*(9F)`, `allocb(9F)` and family | none | `ddi` | Committed |
+| `ddi-blkdev-sys` | `blkdev.h` | `bd_*(9F)`; only the header and its comments exist, there are no manual pages | `drv/blkdev` | none | Committed by convention but undocumented; the first job is to write `blkdev(9E)` upstream |
+| `ddi-scsa-sys` | `scsi/scsi.h` and the public `scsi/scsi_*.h` (not `scsi/impl/`) | `scsi_*(9F)` (41), `tran_*(9E)` (14), `scsi_hba_tran(9S)` and family | `misc/scsi` | none | Committed |
+| `ddi-usba-sys` | `usb/usba.h`, `usb/usbai.h` | `usb_*(9F)` (29), `usb_*(9S)` | `misc/usba` | none | Committed |
+| `ddi-usba-hcdi-sys` | `usb/usba/hcdi.h` | `usba_hcdi_*(9E)` (12), `usba_*(9F)` | `misc/usba` | none | Committed |
+| `ddi-ksensor-sys` | `sensors.h` | `ksensor(9E)`, `ksensor_*(9F)` | `misc/ksensor` | `ksensor` | Evolving, according to the header itself |
+| `ddi-cmlb-sys` | `cmlb.h` | none | `misc/cmlb` | none | Private by omission |
+| `illumos-kernel-private-sys` | `virtio.h` (`io/virtio/`), `vnode.h`/`vfs.h`, `taskq.h` (raw), `id_space.h`, `zone.h`, items from `esunddi.h` | none | varies | none | Private, pinned to a gate commit, usable only with `--features unstable-gate-<hash>` |
 
-Rules that keep the boundaries meaningful:
+A handful of rules keep these boundaries meaningful.
 
-- A `-sys` crate declares only what appears in its listed headers *and*
-  either has a section 9 page or is in its mapfile. Anything else goes to
-  the private tier, never into a Committed crate "just for now".
-- Every declaration carries a doc comment of the form
-  `/// kmem_alloc(9F) — Architecture independent level 1 (DDI/DKI).`
-  A CI script (`xtask lint-man`) checks that the named page exists in
-  `usr/src/man/man9*` and that its INTERFACE LEVEL is not "obsolete".
-- `-sys` crates contain no `impl` blocks except `Default`/`Debug` on plain
-  data. No allocation, no wrappers, no `unsafe fn` bodies. Oxide's
-  `impl kmutex_t { fn new }` in a header crate is the anti-pattern.
-- Function pointers in `9S` structs are `Option<unsafe extern "C" fn(..)>`
-  with exact signatures. `nodev`/`nulldev`/`nochpoll` are provided by the
-  safe crate as correctly-typed Rust stubs per slot rather than transmuted.
-- Opaque kernel types are zero-sized `#[repr(C)]` structs with
-  `PhantomData<(*mut u8, PhantomPinned)>` (stable pattern, no
-  `extern_types`).
-- Per-arch differences (`ddi_isa.h` lives under `uts/intel/sys/`, not
-  `common/`) are `cfg(target_arch)` modules inside the same crate.
-- Each `-sys` crate's `Cargo.toml` carries
-  `[package.metadata.kmod] depends = ["misc/mac"]` so the link tool can
-  assemble `-N` flags from the dependency graph. A driver never types `-N`.
+A `-sys` crate declares only what appears in its listed headers and that
+either has a section 9 page or is present in its mapfile. Anything else
+belongs in the private tier. It never goes into a Committed crate "just for
+now", because "for now" has a way of becoming permanent.
+
+Every declaration carries a doc comment that names its manual page and
+interface level, in the form `/// kmem_alloc(9F). Architecture independent
+level 1 (DDI/DKI).` A CI script, `xtask lint-man`, checks that the named
+page exists under `usr/src/man/man9*` and that its interface level is not
+marked obsolete.
+
+`-sys` crates contain no `impl` blocks apart from `Default` and `Debug` on
+plain data. No allocation, no wrappers, no `unsafe fn` bodies. Oxide's
+`impl kmutex_t { fn new }` inside a header crate is precisely the pattern to
+avoid.
+
+Function pointers in `9S` structures are `Option<unsafe extern "C" fn(..)>`
+with their exact signatures. The safe crate provides correctly typed Rust
+stubs for each slot instead of transmuting the kernel's `nodev`, `nulldev`
+and `nochpoll`.
+
+Opaque kernel types are zero-sized `#[repr(C)]` structures containing
+`PhantomData<(*mut u8, PhantomPinned)>`. This is the stable pattern and
+needs no `extern_types`.
+
+Architecture differences, such as `ddi_isa.h` living under `uts/intel/sys/`
+rather than `common/`, are handled with `cfg(target_arch)` modules inside
+the same crate.
+
+Each `-sys` crate's `Cargo.toml` carries `[package.metadata.kmod]` with a
+`depends` list such as `["misc/mac"]`. The link tool assembles the `-N`
+flags from the dependency graph, so a driver never writes them out.
 
 ## 5. The safe layer: types that express intent
 
-The man pages state rules in prose. The safe crate turns each of them into
-something the compiler checks. The list below is the contract for `ddi`
-(core); subsystem crates follow the same principles.
+The manual pages state their rules in prose. The safe crate turns each rule
+into something the compiler checks. What follows is the contract for the
+core `ddi` crate. The subsystem crates apply the same principles.
 
 ### 5.1 Two result conventions, two error types
 
-`dev_ops` entry points return `DDI_SUCCESS`/`DDI_FAILURE`; `cb_ops` entry
-points return an `errno`. They are unrelated integer spaces and must not be
-confused, so:
+`dev_ops` entry points return `DDI_SUCCESS` or `DDI_FAILURE`. `cb_ops`
+entry points return an `errno`. These are unrelated integer spaces, and
+mixing them up is a classic bug in C drivers. So they are two types:
 
 ```rust
 pub struct Errno(NonZeroI32);           // cb_ops, ioctl, uiomove, ddi_copyin
-pub enum DdiError { Failure }           // dev_ops, ddi_* that return DDI_*
+pub struct DdiError;                    // dev_ops, and every ddi_* that returns DDI_*
 pub type Result<T, E = Errno> = core::result::Result<T, E>;
 ```
 
-`ddi_prop_*` has a third space (`DDI_PROP_NOT_FOUND`, …); it gets `PropError`.
+The property functions have a third space (`DDI_PROP_NOT_FOUND` and
+friends). They will get their own `PropError` when the property API grows
+beyond the two helpers that exist today.
 
 ### 5.2 Module and driver definition
 
+A driver implements the `Driver` trait, implements `CharDevice` on its
+instance type if it is a character device, and invokes the `module!` macro:
+
 ```rust
 ddi::module! {
-    type: RNull,                 // implements ddi::Driver
-    name: "rnull",               // module name; also the minor node prefix
-    linkinfo: "Rust null pseudo device",
+    driver: RNull,
+    ops: [char],                 // or [] for a module without cb_ops
 }
+
 pub struct RNull;
+
 impl ddi::Driver for RNull {
-    type Instance = RNullInstance;                     // per-dip state, Send + Sync
-    fn attach(dev: &DevInfo, ctx: &Sleepable) -> Result<Self::Instance, DdiError>;
-    fn detach(inst: Self::Instance, ctx: &Sleepable) -> Result<(), (Self::Instance, DdiError)>;
-    // suspend/resume/quiesce have defaults that report "not supported"
+    type Instance = RNullInstance;   // per-instance state, Send + Sync
+    const LINKINFO: &'static CStr = c"Rust null pseudo device v1";
+
+    fn attach(dev: DevInfo, ctx: &Sleepable) -> Result<Self::Instance, DdiError>;
+    fn detach(inst: Self::Instance, dev: DevInfo, ctx: &Sleepable)
+        -> Result<(), (Self::Instance, DdiError)>;
+    // resume, suspend and quiesce have defaults; instance_of_minor defaults to identity
 }
-impl ddi::CharDevice for RNullInstance { fn open / close / read / write / ioctl / chpoll }
+
+impl ddi::CharDevice for RNullInstance {
+    // open, close, read, write, ioctl; each has a sensible default
+}
 ```
 
-The macro emits `_init`/`_fini`/`_info` with `#[unsafe(no_mangle)]`, a
-`static modlinkage`, a `dev_ops` whose slots point at typed glue, and a
-`cb_ops` filled from the traits the instance type implements (unimplemented
-traits get the correct `nodev`-equivalent stub). Instance state is a
-`Box<Instance>` stored with `ddi_set_driver_private`; `getinfo(9E)` is
-implemented by the framework via a soft-state table indexed by instance.
-Detach hands the instance *back* on failure so the driver cannot lose it.
+The macro emits `_init`, `_fini` and `_info` with `#[unsafe(no_mangle)]`,
+a static `modlinkage`, a `dev_ops` whose slots point at typed glue, and a
+`cb_ops` filled from the traits the instance type implements. Slots without
+an implementation get a correctly typed stub that behaves like `nodev`.
+
+Instance state lives in a soft-state slot (`ddi_soft_state_*(9F)`) indexed
+by instance number. The framework writes the instance into that slot on
+attach and reads it back out on detach. This is what makes `getinfo(9E)`
+and the mapping from `dev_t` to instance in the `cb_ops` glue work without
+any driver code. On a failed detach the framework hands the instance back
+to the slot, so a driver that refuses to detach cannot lose its state.
 
 ### 5.3 Allocation context is a type, not a flag
 
-`kmem_alloc(9F)`: "KM_SLEEP … may not be called from interrupt context".
-Instead of an integer flag:
+`kmem_alloc(9F)` says that `KM_SLEEP` may not be used from interrupt
+context. In C this is an integer flag and a comment. Here it is a value:
 
 ```rust
-pub struct Sleepable(());       // proof that blocking is permitted
-pub struct Atomic(());          // interrupt / lock-held context
-pub trait Context { const KM: c_int; }
-pub struct KBox<T>(…);
+pub struct Sleepable(..);       // proof that blocking is permitted
+pub struct Atomic(..);          // interrupt or otherwise non-blocking context
+
 impl<T> KBox<T> {
-    pub fn new(v: T, _: &Sleepable) -> KBox<T>;                 // KM_SLEEP: cannot fail
-    pub fn try_new(v: T, _: &impl Context) -> Result<KBox<T>, Errno>; // KM_NOSLEEP
+    pub fn new(v: T, _: &Sleepable) -> KBox<T>;          // KM_SLEEP: cannot fail
+    pub fn try_new(v: T) -> Result<KBox<T>, Errno>;      // KM_NOSLEEP: allowed anywhere
 }
 ```
 
-Entry points receive the context token appropriate to how the kernel calls
-them: `attach`/`detach`/`open`/`close`/`read`/`write`/`ioctl` get
-`&Sleepable`; interrupt handlers and `ks_update` get `&Atomic`. `Sleepable`
-is not `Copy` and cannot be constructed by drivers, so it cannot leak into
-an interrupt handler. There is **no** `#[global_allocator]` by default:
-`alloc::Box::new` would have to pick a flag blindly. A driver may opt in
-to a `KM_SLEEP` global allocator with `features = ["global-alloc-sleep"]`
-for prototypes, and the feature name says what it costs.
+Entry points receive whichever token matches how the kernel calls them.
+`attach`, `detach`, `open`, `close`, `read`, `write` and `ioctl` receive a
+`&Sleepable`. Interrupt handlers and `ks_update` will receive an `&Atomic`.
+Neither token is `Copy`, neither is `Send`, and neither can be constructed
+by a driver, so a `Sleepable` cannot be stashed away and reused inside an
+interrupt handler.
 
-`Mutex<T>::lock` takes no token (mutex_enter never sleeps for memory) but
-`CondVar::wait` requires `&Sleepable`.
+There is no `#[global_allocator]` by default. `alloc::Box::new` would have
+to pick a flag blindly, and whichever flag it picked would be wrong
+somewhere. A driver may opt in to a `KM_SLEEP` global allocator with the
+`global-alloc-sleep` feature while prototyping. The feature name states the
+cost.
 
-### 5.4 Locks own their data and have stable addresses
+`Mutex<T>::lock` takes no token, because `mutex_enter` never sleeps for
+memory. `CondVar::wait` requires a `&Sleepable`.
 
-`kmutex_t` must be initialised by `mutex_init` and never moved while held
-by the kernel. `Mutex<T>` therefore has no `const fn new`; it is created
-by `Mutex::new(value, kind, ctx)` and lives inside the `KBox<Instance>`,
-which is heap-pinned by construction. The guard exits on drop. `mutex_owned`
-becomes `debug_assert!` inside `CondVar::wait`, and `CondVar::wait` consumes
-and returns the guard so the "lock must be held" precondition is enforced:
+### 5.4 Locks own their data
+
+`kmutex_t` must be initialised with `mutex_init(9F)` and destroyed with
+`mutex_destroy(9F)`. `Mutex<T>` does both, in its constructor and in its
+`Drop`. There is no `const fn new`; the constructor calls into the kernel.
+
+An unlocked adaptive mutex with no waiters is a single zero word, so moving
+a `Mutex` between its construction and its final home (normally inside the
+driver's instance, which the framework stores in a soft-state slot) is
+sound. Moving it while locked is prevented by the borrow that `MutexGuard`
+holds. The guard calls `mutex_exit` on drop.
+
+`CondVar::wait` consumes the guard and returns it. That is how the
+precondition "the mutex must be held" becomes something the compiler
+checks:
 
 ```rust
 let mut g = inst.state.lock();
-while !g.ready { g = inst.cv.wait(g, ctx); }
+while !g.ready {
+    g = inst.cv.wait(g, ctx);
+}
 ```
 
-`MUTEX_DRIVER` is the only kind the safe layer exposes for now; the
-interrupt-block-cookie variant arrives with the `intr` feature and takes
-the cookie type from `ddi_intr_get_pri`, so a spin mutex cannot be created
-without an interrupt handle.
+`MUTEX_DRIVER` without an interrupt cookie is the only kind the safe layer
+exposes for now. The variant that blocks interrupts arrives with the `intr`
+feature and will take its cookie from `ddi_intr_get_pri`, so a spin mutex
+cannot be created without an interrupt handle to justify it.
 
-### 5.5 Handles are borrows with the kernel's lifetime rules
+### 5.5 Handles carry the kernel's lifetime rules
 
-- `&DevInfo` is only reachable inside `attach`/`detach`/`getinfo` glue and
-  through the instance's stored `DevInfoRef`; it has no public constructor.
-- `MinorNode` is RAII: `ddi_create_minor_node` on creation,
-  `ddi_remove_minor_node` on drop. Its constructor takes `MinorKind::Char |
-  Block` and `NodeType::Pseudo | …` enums instead of `S_IFCHR` and the
-  `"ddi_pseudo"` string.
-- `Regs<'a>` (`ddi_regs_map_setup`) exposes `read_u32(off)`/`write_u32`;
-  the access attribute (endianness, ordering) is a builder that produces a
-  `ddi_device_acc_attr_t` once, and offsets are checked against the mapped
-  length at construction, not per access.
-- DMA (later): `DmaHandle` → `DmaMem` → `DmaBinding<'mem>` with cookies as
-  an iterator; you cannot obtain a cookie from unbound memory, and
-  `unbind` is the drop of the binding.
-- Interrupts (later): `Interrupts::alloc(kind)` returns a set; adding a
-  handler consumes an `IntrSlot` and yields an `ArmedIntr` whose drop
-  disables and removes. The handler closure receives `&Atomic`.
-- `Uio<'a>` wraps `uio_t` with `copy_in(&mut [u8])`/`copy_out(&[u8])` over
-  `uiomove`; `resid()` and `offset()` are the documented fields.
-- `Cred<'a>` with `has_priv_sys_devices()` over `drv_priv`.
+`DevInfo` has no public constructor. The framework creates it in the glue
+for `attach`, `detach` and `getinfo` and passes it to the driver. It is
+`Copy`, and it may be stored in the instance, because the instance is
+destroyed at detach and therefore cannot outlive the node.
+
+`MinorNode` is an RAII type. Creating one calls `ddi_create_minor_node`;
+dropping it calls `ddi_remove_minor_node`. Its constructor takes
+`MinorKind::Char` or `MinorKind::Block` and a `NodeType` such as
+`NodeType::Pseudo` rather than the `S_IFCHR` constant and the
+`"ddi_pseudo"` string.
+
+`Uio<'a>` wraps a `uio_t` and offers `copy_in` and `copy_out` over
+`uiomove`, plus `skip` and `discard_all` over `uioskip`. `resid` and
+`offset` expose the documented fields.
+
+`Cred<'a>` wraps a `cred_t` for the duration of one entry point and offers
+`has_sys_devices_priv` over `drv_priv`, plus `uid` and `zone_id`.
+
+Two more handle types are designed but not yet written. For registers,
+`Regs<'a>` over `ddi_regs_map_setup` will expose `read_u32(off)` and
+`write_u32(off, v)`, with the access attributes (byte order, ordering)
+built once into a `ddi_device_acc_attr_t` and offsets checked against the
+mapped length at construction rather than on every access. For DMA, the
+chain `DmaHandle` to `DmaMem` to `DmaBinding<'mem>` will make it impossible
+to obtain a cookie from unbound memory; unbinding is simply the drop of the
+binding. For interrupts, `Interrupts::alloc(kind)` will return a set of
+slots, adding a handler will consume a slot and yield an armed interrupt
+whose drop disables and removes it, and the handler will receive an
+`&Atomic`.
 
 ### 5.6 ioctl arguments are typed and model-aware
 
 ```rust
-fn ioctl(&self, cmd: IoctlCmd, arg: IoctlArg<'_>, cred: &Cred, ctx: &Sleepable) -> Result<i32, Errno>;
+fn ioctl(&self, minor: Minor, cmd: IoctlCmd, arg: IoctlArg<'_>,
+         cred: &Cred<'_>, ctx: &Sleepable) -> Result<i32, Errno>;
+
 impl IoctlArg<'_> {
-    pub fn copy_in<T: zerocopy::FromBytes>(&self) -> Result<T, Errno>;   // ddi_copyin, honours FKIOCTL
-    pub fn copy_out<T: zerocopy::IntoBytes>(&self, v: &T) -> Result<(), Errno>;
-    pub fn model(&self) -> DataModel;                                   // ddi_model_convert_from
+    pub fn copy_in<T: FromBytes>(&self) -> Result<T, Errno>;              // ddi_copyin, honours FKIOCTL
+    pub fn copy_out<T: IntoBytes + Immutable>(&self, v: &T) -> Result<(), Errno>;
+    pub fn model(&self) -> DataModel;                                     // ddi_model_convert_from
 }
 ```
 
-`IoctlCmd` is a newtype; drivers define their commands with a
-`const fn ioc(group: u8, n: u8) -> IoctlCmd` so the `_IO*` macros are typed.
+`IoctlCmd` is a newtype around the command number. Drivers define their
+commands with `IoctlCmd::io`, `IoctlCmd::ior::<T>`, `IoctlCmd::iow::<T>`
+and `IoctlCmd::iowr::<T>`, which are `const fn` versions of the `_IO*`
+macros from `sys/ioccom.h`. The `FromBytes` bound on `copy_in` comes from
+`zerocopy` and guarantees that every byte pattern is a valid `T`, so no
+validation is skipped by reading user memory straight into the type.
 
 ### 5.7 Logging without allocation
 
-`cmn_err(9F)` is varargs. The safe layer formats with `core::fmt::Write`
-into a 256-byte stack buffer and calls `cmn_err(level, c"%s", buf)` via
-a fixed-arity shim, so `kwarn!`/`knote!`/`kcont!` are usable from any
-context and never allocate. `panic!` maps to `panic(9F)` the same way.
-`dev_err(9F)` variants prefix the instance name.
+`cmn_err(9F)` takes a variable argument list. The safe layer formats the
+message with `core::fmt::Write` into a 256-byte buffer on the stack and
+calls `cmn_err(level, "%s", buf)` through a fixed-arity call. The `kwarn!`,
+`knote!` and `kcont!` macros are therefore usable from any context and
+never allocate. Rust's `panic!` reaches `panic(9F)` the same way, and
+`DevInfo::warn` and `DevInfo::note` use `dev_err(9F)` so that the message
+is prefixed with the driver name and instance.
 
 ### 5.8 What deliberately stays unsafe
 
-Register access with a wrong offset is a hardware bug, not a memory-safety
-bug, so `Regs::read_u32` is safe. Conversely, `ddi_get_soft_state` with an
-arbitrary instance number, raw `mblk_t` surgery, and anything in the
-private tier remain `unsafe fn` with documented preconditions. The safe
-crate should never claim more than the man page guarantees.
+A register read at a wrong offset is a hardware bug, not a memory-safety
+bug, so `Regs::read_u32` will be a safe function. On the other side,
+`ddi_get_soft_state` with an arbitrary instance number, raw `mblk_t`
+manipulation and everything in the private tier remain `unsafe fn` with
+documented preconditions. The safe crate should never claim more than the
+manual page guarantees.
 
 ## 6. Build and link model
+
+The two steps look like this:
 
 ```
 cargo build -p rnull --target targets/x86_64-illumos-kmod.json \
     -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem \
-    --release                              # → target/.../rnull.a
+    --release                              # produces target/.../rnull.a
 ld -ztype=kmod -N misc/… -z allextract -z defs \
     -M $GATE/usr/src/uts/common/mapfiles/ddi.mapfile [-M mac.mapfile] \
     rnull.a -o rnull
 ```
 
-wrapped by an `xtask` (later `cargo kmod`) that:
+The `xtask` binary (later perhaps a `cargo kmod` subcommand) wraps them. It
+reads `[package.metadata.kmod]` from the driver and, transitively, from
+every `ddi-*-sys` crate in the dependency graph to produce the `-N` list
+and the list of mapfiles. It runs the link on illumos, since the link needs
+the illumos linker; the compile step can happen on any host that has the
+target JSON. It is meant to emit the driver's `.conf` file from
+`[package.metadata.kmod.conf]` and, optionally, to produce an IPS package
+following the `driver` action conventions of `oi-userland`, so that
+`add_drv` runs at install time.
 
-1. reads `[package.metadata.kmod]` from the driver and, transitively, from
-   every `ddi-*-sys` crate in its dependency graph to produce the `-N` list
-   and the mapfile list;
-2. runs the link on illumos (the link step needs illumos `ld`; the compile
-   step can happen on any host with the target JSON);
-3. emits the `.conf` file from `[package.metadata.kmod.conf]`
-   (`name`, `parent`, `instance`, driver properties);
-4. optionally produces an IPS package (`pkg/`), following the
-   `oi-userland` `driver` action conventions, so `add_drv` runs on install.
+One thing is lost for now. The gate merges CTF data into every module so
+that `mdb ::print` can display driver structures. Rust emits DWARF, and
+`ctfconvert` does not understand Rust DWARF. We accept this for
+driver-private types initially. The framework's `#[repr(C)]` types are
+already in the CTF of `genunix`. Rust support in `ctfconvert` is a
+follow-up to track.
 
-CTF: the gate merges CTF for every module so `mdb ::print` works on driver
-structs. Rust emits DWARF, and `ctfconvert` does not understand Rust DWARF.
-Accept the loss for driver-private types initially; the framework's
-`#[repr(C)]` types are already in `genunix` CTF. Track upstream
-`ctfconvert` Rust support as a follow-up.
+The `compiler-builtins-mem` feature makes the module carry its own
+`memcpy`, `memset`, `memcmp`, `memmove` and `bcmp` as weak symbols. The
+kernel exports `memcpy` and `memset` (both are in `ddi.mapfile`) but not
+`memcmp` or `memmove`, so a self-contained module is the only way to pass
+`-z defs`. Inside the module the local definitions simply shadow the
+kernel's.
 
-`compiler-builtins-mem` makes the module carry its own `memcpy`/`memset`/
-`memcmp`/`memmove`/`bcmp`. The kernel exports `memcpy` and `memset` (both in
-`ddi.mapfile`) but not `memcmp`/`memmove`, so a self-contained module is the
-only way to pass `-z defs`; the local definitions simply shadow the kernel's
-inside the module.
-
-Symbols: with `-C symbol-mangling-version=v0` the Rust functions are
-visible to DTrace `fbt` and `mdb` with their mangled names; the `xtask`
-runs `nm` to reject any undefined symbol not in the allowed mapfiles and
-to reject `_Unwind_Resume`, `memcpy` variants the kernel lacks, and any
-SSE-using object.
+With `-C symbol-mangling-version=v0` the Rust functions are visible to
+DTrace's `fbt` provider and to `mdb` under their mangled names. The `xtask`
+is meant to run `nm` over the result and reject any undefined symbol that is
+not in the allowed mapfiles, any reference to `_Unwind_Resume`, and any
+object that uses SSE.
 
 ## 7. Repository layout
 
 ```
 illumos-ddi/
   Cargo.toml                 workspace
-  rust-toolchain.toml        pinned nightly (for -Zbuild-std only)
+  rust-toolchain.toml        stable for check/test; the nightly is pinned in xtask
   targets/x86_64-illumos-kmod.json
-  crates/ddi-sys/            core raw bindings, features: intr dma regs fm
-  crates/ddi/                core safe layer
-  crates/ddi-<subsys>-sys/   one per row in §4, added as needed
+  crates/ddi-sys/            core raw bindings; features intr, dma, regs, fm, kstat
+  crates/ddi/                core safe layer, including the module! macro
+  crates/ddi-<subsys>-sys/   one per row in section 4, added as needed
   crates/ddi-<subsys>/
-  crates/kmod-macros/        proc macro behind ddi::module!
-  examples/rnull/            pseudo char driver: read=EOF, write=discard, ioctl=version
+  examples/rnull/            pseudo char driver: read gives EOF, write discards, three ioctls
   examples/…                 later: ramdisk over blkdev, pchtemp over ksensor
-  xtask/                     build, link, layout-check, lint-man
+  xtask/                     build, link, deps; layout-check and lint-man are planned
   docs/DESIGN.md             this file
-  docs/ddi-inventory.md      header/man/mapfile inventory from the gate
+  docs/ddi-inventory.md      header, manual page and mapfile inventory from the gate
 ```
 
 ## 8. Verification
 
 ### 8.1 Layout tests from the running kernel's CTF
 
-Every `#[repr(C)]` struct in a `-sys` crate is listed in
-`crates/<crate>/layout.toml` (`struct`, fields). `xtask layout-check`,
-run on an illumos host (`oibldofgate`), asks the kernel itself:
+Every `#[repr(C)]` structure in a `-sys` crate is to be listed, with its
+fields, in a `layout.toml` next to the crate. `xtask layout-check`, run on
+an illumos host, asks the kernel itself for the truth:
 
 ```
 echo '::sizeof struct dev_ops; ::offsetof struct dev_ops devo_attach' | mdb -k
 ```
 
-(or `ctfdump -c /kernel/amd64/genunix` when no live kernel is wanted) and
-generates `tests/layout_generated.rs` with `const _: () = assert!(size_of::<dev_ops>() == …)`
-and `offset_of!` assertions. The generated file is checked in per gate
-release so `cargo test --target x86_64-unknown-illumos` on any host
-re-verifies it. This replaces trusting hand-typed structs, without
-shipping bindgen output.
+(or `ctfdump -c /kernel/amd64/genunix` when a live kernel is not wanted)
+and generates `tests/layout_generated.rs` containing `size_of` and
+`offset_of!` assertions. The generated file is checked in per gate release,
+so `cargo test --target x86_64-unknown-illumos` on any host re-verifies the
+layouts. This replaces trusting hand-typed structures without shipping
+bindgen output. The `mdb` queries it depends on were exercised during M1.
 
-### 8.2 man page lint
+### 8.2 Manual page lint
 
-`xtask lint-man --gate $GATE` parses every `/// name(9X)` doc comment in
-`-sys` crates and checks the page exists and its `INTERFACE LEVEL` is not
-obsolete; Committed/Evolving/Private from `ATTRIBUTES` is recorded in the
-generated rustdoc.
+`xtask lint-man --gate $GATE` parses every `/// name(9X)` doc comment in the
+`-sys` crates, checks that the page exists and that its interface level is
+not obsolete, and records the Committed, Evolving or Private status from the
+`ATTRIBUTES` table in the generated rustdoc.
 
 ### 8.3 Host-side tests
 
-Pure logic in `ddi` (errno mapping, ioctl number encoding, log formatting,
-minor-number schemes) is tested with `cargo test` on the host. A
-`host-mock` feature implements `kmem_*`, `mutex_*`, `cv_*`, `cmn_err` over
-libc so driver state machines can be unit-tested outside the kernel.
+The pure logic in `ddi` (errno mapping, ioctl number encoding, log
+formatting, minor-number schemes) is tested with `cargo test` on the host.
+A planned `host-mock` feature implements `kmem_*`, `mutex_*`, `cv_*` and
+`cmn_err` over libc so that driver state machines can be unit-tested
+outside the kernel.
 
 ### 8.4 In-kernel tests
 
-Load `rnull` on `oibldofgate` (root, global zone) with `add_drv`; exercise
-with `dd`, an ioctl test binary, `modunload`. Later, register tests with
-`ktest(9F)` once that framework's interface stabilises.
+`rnull` is loaded on `oibldofgate` (root, global zone) with `add_drv` and
+exercised with `dd`, a small ioctl test program and `rem_drv`. Later, tests
+can register with `ktest(9F)` once that framework's interface has settled.
 
 ### 8.5 Test infrastructure
 
-Loading a module needs root on a kernel that may panic. Three tiers, from
-what exists to what is missing:
+Loading a module requires root on a kernel that is allowed to panic. Three
+tiers exist or are needed, and only two of them exist.
 
-| Tier | What | Status |
-| --- | --- | --- |
-| Manual | `oibldofgate` (Hipster 2026.04 VM, root, stable rustc only). Compile anywhere, `scp` the archive, link and `add_drv` there. | Used for M1; log in the workspace under `logs/oibldofgate/`. |
-| CI | Solstice CI `illumos` label (`openindiana-rust-ci` image from `refraction-forger`, booted per job by `vm-manager`). Runs as an unprivileged user without `add_drv`; can build with a downloaded nightly and link with `ld -ztype=kmod`. `.forgejo/workflows/ci.yml` does exactly that. | Workflow pushed; first run queued. |
-| Agent sandbox | For an agent to do the M1 loop itself it needs a disposable illumos VM with root, the nightly toolchain and gate mapfiles baked in, serial console capture for panics, and snapshot/rollback. The existing pieces are the Solstice images, `vm-manager` (qemu/bhyve, NoCloud) and Archibald. Anima's agent runners already run as pods in the `anima-runners` namespace of the Archibald k0s cluster (Flux from `Toasterson/talos`, `clusters/archibald/*`) next to the `solstice-executor`. What is missing is a sandbox provider in that cluster that boots the illumos image for a session (KubeVirt, or a `vm-manager` job the way Solstice does), injects the checkout and Forgejo token, exposes SSH to the runner pod as its workspace, captures the serial console, and reaps the VM. | Not started; a Homelab/Anima decision. Until then M2+ verification stays manual on `oibldofgate`. |
+The manual tier is `oibldofgate`, a Hipster 2026.04 VM with root access and
+only the stable Rust from the package repository. The archive is compiled
+elsewhere, copied over, linked there and installed with `add_drv`. This is
+how M1 was done; the logs are in the workspace under `logs/oibldofgate/`.
 
-For the image: `refraction-forger` recipe `openindiana-rust-ci` plus
-`rustup` with the pinned nightly and `rust-src`, `developer/debug/mdb`,
-`system/dtrace`, a checkout of `usr/src/uts/common/mapfiles`, and `sudo`
-or a root login. Panic capture: bhyve serial console to a file on the host.
+The CI tier is the Solstice CI `illumos` label, which boots the
+`openindiana-rust-ci` image from `refraction-forger` per job using
+`vm-manager`. Jobs run as an unprivileged user and cannot `add_drv`, but
+they can download a nightly, build with `-Zbuild-std` and link with
+`ld -ztype=kmod`. That is what `.forgejo/workflows/ci.yml` does. The
+workflow is pushed and its first run is queued.
+
+The agent sandbox tier does not exist yet. For an agent to run the M1 loop
+on its own it needs a disposable illumos VM with root, the nightly
+toolchain and the gate mapfiles baked in, serial console capture for
+panics, and snapshot and rollback. The building blocks are there: the
+Solstice images, `vm-manager` with its qemu and bhyve backends and NoCloud
+metadata, and Archibald. Anima's agent runners already run as pods in the
+`anima-runners` namespace of the Archibald k0s cluster, managed by Flux from
+`clusters/archibald/*` in `Toasterson/talos`, next to the
+`solstice-executor`. What is missing is a sandbox provider in that cluster
+that boots the illumos image for a session (through KubeVirt, or as a
+`vm-manager` job the way Solstice does it), injects the checkout and a
+Forgejo token, exposes SSH to the runner pod as its workspace, captures the
+serial console and reaps the VM afterwards. This is a decision for the
+Homelab and Anima side. Until it is made, verification beyond M1 stays
+manual on `oibldofgate`.
+
+For the image itself, the `openindiana-rust-ci` recipe would need `rustup`
+with the pinned nightly and `rust-src`, the `developer/debug/mdb` and
+`system/dtrace` packages, a checkout of `usr/src/uts/common/mapfiles`, and
+either `sudo` or a root login. Panic capture means routing the bhyve serial
+console to a file on the host.
 
 ## 9. Milestones
 
-1. **M0 skeleton** (done 2026-09-20): workspace, target JSON, `ddi-sys` core
-   subset, `ddi` with `module!`, `Driver`, `CharDevice`, `KBox`, `Mutex`,
-   `CondVar`, logging, `Uio`, `IoctlArg`; `rnull` example;
-   `cargo check`/`clippy` on `x86_64-unknown-illumos` clean.
-2. **M1 loads** (done 2026-09-20): `rnull.a` cross-built on macOS with
-   nightly-2026-04-16, linked on `oibldofgate` with `ld -ztype=kmod -z
-   allextract` (`DT_SUNW_KMOD` present, undefined symbols are DDI only),
-   `add_drv rnull`, then from userland: version ioctl, three 4 KiB writes
-   counted, read returns EOF, stats and reset ioctls, unknown ioctl gives
-   `ENOTTY`, 1 MiB `dd` at 2.5 GiB/s; `dev_err` notes appear in `dmesg`;
-   `rem_drv` unloads cleanly. 456 `fbt` probes visible to DTrace, `mdb -k`
-   disassembles `rnull\`_init`. Still open from M1: the `layout-check` tool
-   (the `mdb` queries it needs are proven above), and the strict
-   `-z defs -M ddi.mapfile` link, blocked on the two mapfile gaps in §3.3.
-3. **M2 hardware-shaped**: `regs`, `intr`, `dma` features; port
-   `pchtemp` (ksensor, Evolving tier) as the second example since a
-   reference C implementation exists.
-4. **M3 block**: `ddi-blkdev-sys`/`ddi-blkdev`; a ramdisk example; write
-   the missing `blkdev(9E)` man pages upstream.
-5. **M4 network**: `ddi-mac-sys`/`ddi-mac`; compare against `xde` and
-   invite Oxide to converge `illumos-sys-hdrs` onto it.
-6. **M5 gate integration**: a `Makefile.rust` for `usr/src/uts` that
-   invokes cargo with a pinned toolchain and reuses `Makefile.targ`'s link
-   rule; IPD for illumos.
+M0, the skeleton, was completed on 20 September 2026. It comprises the
+workspace, the target JSON, the core subset of `ddi-sys`, the `ddi` crate
+with `module!`, `Driver`, `CharDevice`, `KBox`, `Mutex`, `CondVar`, logging,
+`Uio` and `IoctlArg`, and the `rnull` example. `cargo check` and `cargo
+clippy` pass on `x86_64-unknown-illumos` with stable Rust.
+
+M1, the first load, was completed the same day. `rnull.a` was cross-built
+on macOS with nightly-2026-04-16 and linked on `oibldofgate` with
+`ld -ztype=kmod -z allextract`. The result carries the `DT_SUNW_KMOD` tag
+and its undefined symbols are DDI functions only. After `add_drv rnull`, a
+test program from userland confirmed the version ioctl, three 4 KiB writes
+counted correctly, a read returning end of file, the stats and reset
+ioctls, and `ENOTTY` for an unknown command. A 1 MiB `dd` ran at 2.5 GiB/s.
+The `dev_err` notices appeared in `dmesg`, and `rem_drv` unloaded the module
+cleanly. While loaded, DTrace listed 456 `fbt` probes on the module and
+`mdb -k` disassembled `rnull\`_init`. Two things from M1 remain open: the
+`layout-check` tool, whose `mdb` queries are proven, and the strict
+`-z defs -M ddi.mapfile` link, which is blocked on the two mapfile gaps
+described in section 3.3.
+
+M2 gives the framework a hardware shape: the `regs`, `intr` and `dma`
+features, and a port of `pchtemp` (ksensor, Evolving tier) as the second
+example, chosen because a reference C implementation exists to compare
+against.
+
+M3 is block devices: `ddi-blkdev-sys` and `ddi-blkdev`, a ramdisk example,
+and the missing `blkdev(9E)` manual pages written and sent upstream.
+
+M4 is networking: `ddi-mac-sys` and `ddi-mac`, compared against `xde`, with
+an invitation to Oxide to converge `illumos-sys-hdrs` onto the shared
+crates.
+
+M5 is gate integration: a `Makefile.rust` for `usr/src/uts` that invokes
+cargo with a pinned toolchain and reuses the link rule from
+`Makefile.targ`, together with an IPD for illumos.
 
 ## 10. Open questions
 
-- Naming: `ddi`/`ddi-sys` is short and accurate but generic on crates.io;
-  `illumos-ddi` is unambiguous but long for per-subsystem crates.
-- Where it lives: `github.com/illumos/` alongside the userland `-sys`
-  crates, or `code.aopc.cloud/OpenIndiana/` first and upstream later.
-- Toolchain pin: follow Oxide's nightly cadence or pin once per illumos
-  release.
-- `blkdev` has no man pages; binding it as Committed requires writing them.
-- MAC is versioned (`MAC_VERSION_V1`); expose the version as a const
-  generic or a feature.
-- CTF for Rust types: wait for `ctfconvert` support or generate CTF from
-  `layout.toml` ourselves.
+The crate names are undecided. `ddi` and `ddi-sys` are short and accurate
+but generic on crates.io. `illumos-ddi` is unambiguous but becomes long
+once per-subsystem crates are added.
+
+The eventual home is undecided. The repository currently lives at
+`code.aopc.cloud/illumos/illumos-ddi`. Moving it to `github.com/illumos/`
+next to the userland `-sys` crates would be the natural upstream step once
+the design has settled.
+
+The toolchain pin is undecided. We could follow Oxide's nightly cadence or
+pin once per illumos release.
+
+`blkdev` has no manual pages. Binding it as a Committed interface requires
+writing them first.
+
+MAC is versioned through `MAC_VERSION_V1`. Whether to expose that as a const
+generic or as a Cargo feature is open.
+
+CTF for Rust types is unresolved. We can wait for `ctfconvert` to learn Rust
+DWARF, or generate CTF ourselves from the `layout.toml` files.
