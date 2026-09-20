@@ -1,0 +1,26 @@
+[package]
+name = "ddi-sys"
+description = "Raw bindings to the illumos kernel Driver Developer Interface (DDI/DKI, man section 9): core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Each feature is a documented DDI family with its own man 9 pages. They
+# stay behind features so a driver's Cargo.toml states which parts of the
+# DDI it touches and `xtask lint-man` can scope its checks.
+intr = []   # ddi_intr_*(9F)
+dma = []    # ddi_dma_*(9F), ddi_dma_attr(9S), ddi_dma_cookie(9S)
+regs = []   # ddi_regs_map_setup(9F), ddi_get8(9F) family
+fm = []     # ddi_fm_*(9F)
+kstat = []  # kstat_create(9F) family
+
+[dependencies]
+
+[package.metadata.kmod]
+# Symbols in this crate resolve from genunix/unix; no -N dependency.
+depends = []
+mapfiles = ["ddi"]

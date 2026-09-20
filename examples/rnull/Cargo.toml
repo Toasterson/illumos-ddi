@@ -1,0 +1,22 @@
+[package]
+name = "rnull"
+description = "Rust null pseudo device: proves the DDI toolchain end to end"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+ddi.workspace = true
+zerocopy.workspace = true
+
+[package.metadata.kmod]
+# Install class: /kernel/drv/amd64/rnull
+class = "drv"
+conf = "rnull.conf"
+# Module dependencies beyond those implied by ddi-* crates.
+depends = []

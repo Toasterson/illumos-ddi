@@ -1,0 +1,24 @@
+[package]
+name = "ddi"
+description = "Safe Rust layer over the illumos kernel Driver Developer Interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["panic-handler"]
+# Route Rust panics to panic(9F). Disable when linking into a hosted test.
+panic-handler = []
+# Provide a #[global_allocator] that always uses KM_SLEEP. Only for
+# prototypes: it is unsound to allocate this way from interrupt context.
+global-alloc-sleep = []
+regs = ["ddi-sys/regs"]
+
+[dependencies]
+ddi-sys.workspace = true
+zerocopy.workspace = true
+
+[package.metadata.kmod]
+depends = []
