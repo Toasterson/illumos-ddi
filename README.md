@@ -1,5 +1,9 @@
 # illumos-ddi
 
+Hosted at <https://code.aopc.cloud/illumos/illumos-ddi>. State: the `rnull`
+example driver has been built, linked with `ld -ztype=kmod`, loaded, exercised
+and unloaded on an OpenIndiana Hipster 2026.04 kernel (2026-09-20).
+
 Rust bindings and a safe driver-development layer for the illumos kernel
 Driver Developer Interface (DDI/DKI, manual section 9).
 
@@ -16,6 +20,6 @@ headers, man pages and mapfiles to the planned crate boundaries.
 
 ```sh
 cargo check --target x86_64-unknown-illumos      # any host
-cargo xtask build rnull                          # nightly + -Zbuild-std
+cargo xtask build rnull                          # nightly-2026-04-16 + -Zbuild-std
 cargo xtask link rnull                           # on illumos: ld -ztype=kmod
 ```

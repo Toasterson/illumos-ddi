@@ -1,6 +1,6 @@
 # illumos DDI for Rust: design
 
-Status: draft, 2026-09-20. Working names throughout (`ddi-sys`, `ddi`,
+Status: draft, 2026-09-20; M0 and M1 done the same day (see §9). Working names throughout (`ddi-sys`, `ddi`,
 `ddi-<subsystem>`); naming is an open question, see §10.
 
 ## 1. Goal
@@ -113,9 +113,10 @@ Three signals, none sufficient alone (see the inventory in
 
 The mapfile is *incomplete* relative to the man pages: `getminor(9F)`,
 `getmajor(9F)`, `makedevice(9F)`, `ddi_prop_exists(9F)`,
-`ddi_model_convert_from(9F)`, `rw_read_locked(9F)`, `crgetuid(9F)` and
-`vpanic` are documented DDI but absent from `ddi.mapfile` (checked
-2026-09-20). So the mapfile can gate a link (`-z defs`) but cannot define
+`ddi_model_convert_from(9F)`, `rw_read_locked(9F)`, `crgetuid(9F)`,
+`uioskip(9F)` and `vpanic` are documented DDI but absent from `ddi.mapfile`
+(checked 2026-09-20; `-z defs -M ddi.mapfile` on `rnull` fails on exactly
+`getminor` and `uioskip`). So the mapfile can gate a link (`-z defs`) but cannot define
 the binding surface; `xtask lint-man` should report "documented but not in
 mapfile" so the gaps can be sent upstream as mapfile additions.
 
@@ -138,7 +139,11 @@ however, reliable for the negative case.
 | `ddi_device_acc_attr_t` | `u16 version; u8 endian; u8 dataorder; u8 access` | `sys/dditypes.h` |
 | `struct uio` | documented fields in `uio(9S)`; layout in `sys/uio.h` | must be layout-tested |
 
-These are the things a CTF-driven layout test (§8.1) must pin.
+These are the things a CTF-driven layout test (§8.1) must pin. Spot-checked
+against the running kernel on `oibldofgate` (illumos-cda5b9a49f) with
+`mdb -k`: `struct dev_ops` 0x58, `devo_attach` at 0x20, `struct cb_ops` 0x88,
+`struct uio` 0x30 with `uio_resid` at 0x28, `kmutex_t` 8, `kcondvar_t` 2,
+`struct modlinkage` 0x40. All match the const assertions in `ddi-sys`.
 
 ## 4. Crate boundaries
 
@@ -436,16 +441,38 @@ Load `rnull` on `oibldofgate` (root, global zone) with `add_drv`; exercise
 with `dd`, an ioctl test binary, `modunload`. Later, register tests with
 `ktest(9F)` once that framework's interface stabilises.
 
+### 8.5 Test infrastructure
+
+Loading a module needs root on a kernel that may panic. Three tiers, from
+what exists to what is missing:
+
+| Tier | What | Status |
+| --- | --- | --- |
+| Manual | `oibldofgate` (Hipster 2026.04 VM, root, stable rustc only). Compile anywhere, `scp` the archive, link and `add_drv` there. | Used for M1; log in the workspace under `logs/oibldofgate/`. |
+| CI | Solstice CI `illumos` label (`openindiana-rust-ci` image from `refraction-forger`, booted per job by `vm-manager`). Runs as an unprivileged user without `add_drv`; can build with a downloaded nightly and link with `ld -ztype=kmod`. `.forgejo/workflows/ci.yml` does exactly that. | Workflow pushed; first run queued. |
+| Agent sandbox | For an agent to do the M1 loop itself it needs a disposable illumos VM with root, the nightly toolchain and gate mapfiles baked in, serial console capture for panics, and snapshot/rollback. The existing pieces are the Solstice images, `vm-manager` (qemu/bhyve, NoCloud) and Archibald. Anima's agent runners already run as pods in the `anima-runners` namespace of the Archibald k0s cluster (Flux from `Toasterson/talos`, `clusters/archibald/*`) next to the `solstice-executor`. What is missing is a sandbox provider in that cluster that boots the illumos image for a session (KubeVirt, or a `vm-manager` job the way Solstice does), injects the checkout and Forgejo token, exposes SSH to the runner pod as its workspace, captures the serial console, and reaps the VM. | Not started; a Homelab/Anima decision. Until then M2+ verification stays manual on `oibldofgate`. |
+
+For the image: `refraction-forger` recipe `openindiana-rust-ci` plus
+`rustup` with the pinned nightly and `rust-src`, `developer/debug/mdb`,
+`system/dtrace`, a checkout of `usr/src/uts/common/mapfiles`, and `sudo`
+or a root login. Panic capture: bhyve serial console to a file on the host.
+
 ## 9. Milestones
 
-1. **M0 skeleton** (this commit): workspace, target JSON, `ddi-sys` core
+1. **M0 skeleton** (done 2026-09-20): workspace, target JSON, `ddi-sys` core
    subset, `ddi` with `module!`, `Driver`, `CharDevice`, `KBox`, `Mutex`,
    `CondVar`, logging, `Uio`, `IoctlArg`; `rnull` example;
-   `cargo check --target x86_64-unknown-illumos` clean.
-2. **M1 loads**: build with `-Zbuild-std` on the kmod target, link with
-   `ld -ztype=kmod -z defs -M ddi.mapfile` on `oibldofgate`, `add_drv rnull`,
-   read/write/ioctl from userland, `modunload`. Layout-check tool producing
-   the generated assertions for `ddi-sys`.
+   `cargo check`/`clippy` on `x86_64-unknown-illumos` clean.
+2. **M1 loads** (done 2026-09-20): `rnull.a` cross-built on macOS with
+   nightly-2026-04-16, linked on `oibldofgate` with `ld -ztype=kmod -z
+   allextract` (`DT_SUNW_KMOD` present, undefined symbols are DDI only),
+   `add_drv rnull`, then from userland: version ioctl, three 4 KiB writes
+   counted, read returns EOF, stats and reset ioctls, unknown ioctl gives
+   `ENOTTY`, 1 MiB `dd` at 2.5 GiB/s; `dev_err` notes appear in `dmesg`;
+   `rem_drv` unloads cleanly. 456 `fbt` probes visible to DTrace, `mdb -k`
+   disassembles `rnull\`_init`. Still open from M1: the `layout-check` tool
+   (the `mdb` queries it needs are proven above), and the strict
+   `-z defs -M ddi.mapfile` link, blocked on the two mapfile gaps in §3.3.
 3. **M2 hardware-shaped**: `regs`, `intr`, `dma` features; port
    `pchtemp` (ksensor, Evolving tier) as the second example since a
    reference C implementation exists.
