@@ -271,8 +271,8 @@ belongs in the private tier. It never goes into a Committed crate "just for
 now", because "for now" has a way of becoming permanent.
 
 Every declaration carries a doc comment that names its manual page and
-interface level, in the form `/// kmem_alloc(9F). Architecture independent
-level 1 (DDI/DKI).` A CI script, `xtask lint-man`, checks that the named
+interface level, in the form ``/// `kmem_alloc(9F)`. Architecture independent
+level 1 (DDI/DKI).`` A CI script, `xtask lint-man`, checks that the named
 page exists under `usr/src/man/man9*` and that its interface level is not
 marked obsolete.
 
