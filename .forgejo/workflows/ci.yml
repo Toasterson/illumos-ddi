@@ -13,13 +13,22 @@ on:
 
 jobs:
   check-hosted:
-    # Ubuntu + rustup stable: type-check and lint against the hosted illumos target.
+    # Ubuntu: type-check, lint, format-check and document against the hosted
+    # illumos target. The image's shared rustup under /opt/rust is read-only
+    # for the job user, so the toolchain pinned in rust-toolchain.toml is
+    # installed into a private rustup in $HOME. Steps do not share an
+    # environment, so each one sets the paths again.
     runs-on: rust
     steps:
-      - run: export SCCACHE_STARTUP_TIMEOUT=60 && rustup target add x86_64-unknown-illumos && cargo check --workspace --target x86_64-unknown-illumos
-      - run: cargo clippy --workspace --target x86_64-unknown-illumos -- -D warnings
-      - run: cargo fmt --all -- --check
-      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude xtask --no-deps --target x86_64-unknown-illumos
+      - run: >
+          curl -sSf https://sh.rustup.rs | env RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo"
+          sh -s -- -y --profile minimal --default-toolchain none --no-modify-path &&
+          export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" PATH="$HOME/.cargo/bin:$PATH" SCCACHE_STARTUP_TIMEOUT=60 &&
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy --target x86_64-unknown-illumos
+      - run: export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" PATH="$HOME/.cargo/bin:$PATH" SCCACHE_STARTUP_TIMEOUT=60 && cargo check --workspace --target x86_64-unknown-illumos
+      - run: export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" PATH="$HOME/.cargo/bin:$PATH" SCCACHE_STARTUP_TIMEOUT=60 && cargo clippy --workspace --target x86_64-unknown-illumos -- -D warnings
+      - run: export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" PATH="$HOME/.cargo/bin:$PATH" SCCACHE_STARTUP_TIMEOUT=60 && cargo fmt --all -- --check
+      - run: export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" PATH="$HOME/.cargo/bin:$PATH" SCCACHE_STARTUP_TIMEOUT=60 && RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude xtask --no-deps --target x86_64-unknown-illumos
 
   kmod-illumos:
     # Native illumos: install a pinned nightly (the only nightly-only step is
