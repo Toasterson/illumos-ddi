@@ -822,8 +822,11 @@ The CI tier is the Solstice CI `illumos` label, which boots the
 `openindiana-rust-ci` image from `refraction-forger` per job using
 `vm-manager`. Jobs run as an unprivileged user and cannot `add_drv`, but
 they can download a nightly, build with `-Zbuild-std` and link with
-`ld -ztype=kmod`. That is what `.forgejo/workflows/ci.yml` does. The
-workflow is pushed and its first run is queued.
+`ld -ztype=kmod`. That is what `.forgejo/workflows/ci.yml` does for
+`rnull` and `rselftest`. The workflow failed on every run until 26
+September 2026, because it cloned the repository itself from a server URL
+the runner does not set, and because the hosted image's shared rustup is
+read-only; since those two fixes both jobs pass.
 
 The agent sandbox tier does not exist yet. For an agent to run the M1 loop
 on its own it needs a disposable illumos VM with root, the nightly

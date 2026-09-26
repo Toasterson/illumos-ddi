@@ -110,12 +110,14 @@ exact commands that were used for the first load.
 
 ## Continuous integration
 
-`.forgejo/workflows/ci.yml` runs on Solstice CI. One job type-checks, lints
-and checks formatting on a hosted Linux image against the illumos target.
+`.forgejo/workflows/ci.yml` runs on Solstice CI. One job type-checks, lints,
+checks formatting and builds the documentation on a hosted Linux image
+against the illumos target.
 A second job runs natively on an illumos image, installs the pinned
-nightly, builds `rnull` for the kernel target and links it as a kernel
-module. Neither job loads the module, since that needs root on a kernel
-that is allowed to panic.
+nightly, builds `rnull` and `rselftest` for the kernel target and links
+them as kernel modules. Neither job loads a module, since that needs root
+on a kernel that is allowed to panic; loading is done by hand on a test VM,
+as the design document describes.
 
 ## Licence
 
