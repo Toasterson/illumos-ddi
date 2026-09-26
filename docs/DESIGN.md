@@ -1,9 +1,11 @@
 # illumos DDI for Rust: design
 
 This document is a draft. It was written on 20 September 2026, and the first
-two milestones described in section 9 were reached the same day. The crate
-names used throughout (`ddi-sys`, `ddi`, `ddi-<subsystem>`) are working
-names. Naming is one of the open questions in section 10.
+two milestones described in section 9 were reached the same day. The third,
+the complete binding surface and a safe layer for every family a leaf
+driver uses, was reached on 26 September 2026. The crate names used
+throughout (`ddi-sys`, `ddi`, `ddi-<subsystem>`) are working names. Naming
+is one of the open questions in section 10.
 
 ## 1. Goal
 
@@ -34,10 +36,12 @@ Drivers depend on the safe layer only. If a driver crate contains `unsafe`
 anywhere other than hardware register access, something in the safe layer
 is missing and should be added there.
 
-Some things are deliberately out of scope for the first iterations. Nexus
-drivers with their `bus_ops` and `ndi_*` interfaces are not covered. The
-STREAMS framework is bound only as far as MAC needs it. Filesystem modules
-(`modlfs`) are not covered. SPARC is not covered.
+Some things are deliberately out of scope. Nexus drivers with their
+`bus_ops` and `ndi_*` interfaces are not covered, because the manual does
+not document them as DDI. Filesystem modules (`modlfs`) are not covered,
+because the VFS and vnode interfaces are not DDI either. SPARC is not
+covered. STREAMS is bound completely in the raw layer, but the safe layer
+has no STREAMS support yet.
 
 ## 2. Prior art and what it teaches
 
@@ -196,10 +200,14 @@ The mapfile turns out to be incomplete relative to the manual pages.
 `uioskip(9F)` and `vpanic` are all documented DDI and all absent from
 `ddi.mapfile` as of 20 September 2026. Linking `rnull` with
 `-z defs -M ddi.mapfile` fails on exactly two of them, `getminor` and
-`uioskip`. The conclusion is that the mapfile can gate a link but cannot
-define the binding surface. The planned `xtask lint-man` should report
-"documented but not in mapfile" so that the gaps can be sent upstream as
-mapfile additions.
+`uioskip`. The larger self-test driver fails on 24, among them the
+semaphore functions, most of the property lookups and all of LDI. Measured
+across the whole core crate with `xtask lint-man --mapfile-gaps`, 497
+functions that have a manual page and that the running kernel exports are
+not in the mapfile. The mapfile is a curated subset for the drivers that
+opted into it, not a description of the DDI. It can gate a link, but it
+cannot define the binding surface, and a strict link of a Rust driver needs
+those additions upstream first.
 
 Header names, on the other hand, tell you nothing about what is public.
 `ddi_impldefs.h` and `mac_impl.h` are installed into `/usr/include/sys`
@@ -225,13 +233,14 @@ bindings. The table lists them with their source in the gate.
 | `ddi_device_acc_attr_t` | `u16 version; u8 endian; u8 dataorder; u8 access` | `sys/dditypes.h` |
 | `struct uio` | documented fields in `uio(9S)`; layout in `sys/uio.h` | must be layout-tested |
 
-These are exactly the things the CTF-driven layout test in section 8.1 has
-to pin. They were spot-checked against the running kernel on `oibldofgate`
-(build `illumos-cda5b9a49f`) with `mdb -k`. `struct dev_ops` is 0x58 bytes
-with `devo_attach` at offset 0x20, `struct cb_ops` is 0x88, `struct uio` is
-0x30 with `uio_resid` at 0x28, `kmutex_t` is 8, `kcondvar_t` is 2 and
-`struct modlinkage` is 0x40. All of them match the constant assertions in
-`ddi-sys`.
+These are exactly the things the CTF-driven layout test in section 8.1
+pins. They were first spot-checked against the running kernel on
+`oibldofgate` (build `illumos-cda5b9a49f`) with `mdb -k`. `struct dev_ops`
+is 0x58 bytes with `devo_attach` at offset 0x20, `struct cb_ops` is 0x88,
+`struct uio` is 0x30 with `uio_resid` at 0x28, `kmutex_t` is 8,
+`kcondvar_t` is 2 and `struct modlinkage` is 0x40. Since then every
+structure in every `-sys` crate has been checked the same way, with the
+results in section 8.1.
 
 ## 4. Crate boundaries
 
@@ -243,38 +252,50 @@ it gets a crate. That crate then owns three things: the symbols it
 declares, the `-N` dependency it implies, and the mapfile it can be
 checked against.
 
-| Crate | Headers (`usr/src/uts/common/sys/`) | man 9 family | kmod dep (`-N`) | mapfile | Tier |
+| Crate | What it covers | man 9 family | kmod dep (`-N`) | mapfile | Tier |
 | --- | --- | --- | --- | --- | --- |
-| `ddi-sys` | `types.h`, `errno.h`, `param.h`, `modctl.h`, `devops.h`, `conf.h`, `dditypes.h`, `sunddi.h` (core subset), `ddipropdefs.h` (enums only), `cred.h`, `uio.h`, `buf.h`, `open.h`, `file.h` (flags), `stat.h` (`S_IF*`), `cmn_err.h`, `kmem.h`, `mutex.h`, `condvar.h`, `rwlock.h`, `semaphore.h`, `ddi_periodic.h` (API only), `kstat.h`, `sysmacros.h`/`atomic.h` as needed | `Intro(9E)`, `dev_ops(9S)`, `cb_ops(9S)`, `modl*(9S)`, `ddi_*`, `kmem_*`, `mutex_*`, `cv_*`, `rw_*`, `cmn_err`, `uio*`, `bio*`, `kstat_*`, `ddi_prop_*`, `ddi_soft_state_*`, `ddi_taskq_*`, `ddi_periodic_*` | none (genunix/unix) | `ddi` | Committed |
-| `ddi-sys` feature `intr` | `ddi_intr.h` | `ddi_intr_*(9F)` (14 pages) | none | `ddi` | Committed |
-| `ddi-sys` feature `dma` | `ddidmareq.h`, `sunddi.h` DMA subset | `ddi_dma_*(9F)`, `ddi_dma_attr(9S)`, `ddi_dma_cookie(9S)` | none | `ddi` | Committed |
-| `ddi-sys` feature `regs` | `sunddi.h` regs subset, `dditypes.h` | `ddi_regs_map_setup(9F)`, `ddi_get8(9F)` and family | none | `ddi` | Committed |
-| `ddi-sys` feature `fm` | `ddifm.h` | `ddi_fm_*(9F)`, `ddi_fm_error(9S)` | none | `ddi` | Committed |
-| `ddi-ufm-sys` | `ddi_ufm.h` | `ddi_ufm(9E)`, `ddi_ufm_*(9F)` | none | none | Committed, versioned |
-| `ddi-pci-sys` | `pci.h` (constants), `sunddi.h` `pci_config_*` | `pci_config_*(9F)` | none | `ddi` | Committed |
-| `ddi-ldi-sys` | `sunldi.h` | `ldi_*(9F)` (24 pages) | none | none | Committed |
-| `ddi-mac-sys` | `mac_provider.h`, `mac.h`, `mac_ether.h` | `mac(9E)`, `mc_*(9E)`, `mac_*(9F)`, `mac_register(9S)`, `mac_callbacks(9S)` | `misc/mac` | `mac` | Committed, versioned (`MAC_VERSION_V1`) |
-| `ddi-streams-sys` | `stream.h`, `strsun.h`, `stropts.h` | `queue(9S)`, `msgb(9S)`, `qinit(9S)`, `put(9E)`, `srv(9E)`, `q*(9F)`, `mi*(9F)`, `allocb(9F)` and family | none | `ddi` | Committed |
-| `ddi-blkdev-sys` | `blkdev.h` | `bd_*(9F)`; only the header and its comments exist, there are no manual pages | `drv/blkdev` | none | Committed by convention but undocumented; the first job is to write `blkdev(9E)` upstream |
-| `ddi-scsa-sys` | `scsi/scsi.h` and the public `scsi/scsi_*.h` (not `scsi/impl/`) | `scsi_*(9F)` (41), `tran_*(9E)` (14), `scsi_hba_tran(9S)` and family | `misc/scsi` | none | Committed |
-| `ddi-usba-sys` | `usb/usba.h`, `usb/usbai.h` | `usb_*(9F)` (29), `usb_*(9S)` | `misc/usba` | none | Committed |
-| `ddi-usba-hcdi-sys` | `usb/usba/hcdi.h` | `usba_hcdi_*(9E)` (12), `usba_*(9F)` | `misc/usba` | none | Committed |
-| `ddi-ksensor-sys` | `sensors.h` | `ksensor(9E)`, `ksensor_*(9F)` | `misc/ksensor` | `ksensor` | Evolving, according to the header itself |
-| `ddi-cmlb-sys` | `cmlb.h` | none | `misc/cmlb` | none | Private by omission |
-| `illumos-kernel-private-sys` | `virtio.h` (`io/virtio/`), `vnode.h`/`vfs.h`, `taskq.h` (raw), `id_space.h`, `zone.h`, items from `esunddi.h` | none | varies | none | Private, pinned to a gate commit, usable only with `--features unstable-gate-<hash>` |
+| `ddi-sys` | everything that resolves from `genunix` or `unix`: module linkage, `dev_ops` and `cb_ops`, device nodes and minor nodes, soft state, properties, credentials and privileges, memory and caches, locks, time and callouts, task queues, `uio`, `buf` and the `bio` family, registers, PCI configuration space, interrupts, DMA, the x86 ISA DMA engine, fault management, kstats, UFM, `devmap`, LDI, name-value lists, STREAMS, events and sysevents, device IDs, power management, `ddi_umem`, firmware loading, strings, atomics, `stdbit`, `bitext`, lists, AVL trees, ID spaces, `vmem`, resource maps and the character set conversions | every non-obsolete `9F` page of those families, with `9S` structures and `9E` callback types | none | `ddi` | Committed, with Volatile and Evolving families marked as such per item |
+| `ddi-mac-sys` | `mac_provider.h`, `mac.h`, `mac_ether.h` | `mac(9E)`, `mc_*(9E)`, `mr_*`, `mri_*`, `mgi_*`, `mi_*(9E)`, `mac_*(9F)`, `mac_register(9S)` and friends | `misc/mac` | `mac` | Committed, versioned (`MAC_VERSION_V1`) |
+| `ddi-scsa-sys` | `scsi/scsi.h` and the public `scsi/scsi_*.h`, `scsi/generic/*` | `scsi_*(9F)`, `sas_phymap_*(9F)`, `tran_*(9E)`, `scsi_*(9S)` | `misc/scsi` | none | Committed; the iport, target map and phymap families are Volatile |
+| `ddi-usba-sys` | `usb/usba.h`, `usb/usbai.h`, `usb/usba/hcdi.h`, `usb/usba/hubdi.h` | `usb_*(9F)`, `usb_*(9S)`, `usba_hcdi_*(9E)`, `usba_*(9F)`, `usba_*(9S)` | `misc/usba` | none | Committed for clients, Volatile for host controllers |
+| `ddi-neti-sys` | `neti.h`, `hook.h`, `hook_event.h` | `net_*(9F)`, `hook_*(9F)`, `net_*(9S)`, `hook_*(9S)` | `misc/neti`, `misc/hook` | none | Committed |
+| `ddi-ksensor-sys` | `sensors.h` | `ksensor(9E)`, `ksensor_ops(9E)`, `ksensor_*(9F)` | none (in `genunix`) | `ksensor` | Volatile, according to the pages and the header |
+| `ddi-pcmcia-sys` | `pccard.h` and the client parts of `pcmcia/` | `csx_*(9F)`, `csx_event_handler(9E)`, `tuple(9S)` | none (in `genunix`) | none | Committed, for legacy hardware |
+| `ddi-gld-sys` | `gld.h` | `gld(9E)`, `gld(9F)`, `gld_mac_info(9S)`, `gld_stats(9S)` | `misc/gld` | none | Committed, superseded by MAC |
+| `ddi-ktest-sys` | `ktest.h` | `ktest_*(9F)` | `drv/ktest` | none | Volatile |
+| `ddi-blkdev-sys` | `blkdev.h` | none; the header and its comments are all there is | `drv/blkdev` | none | Planned. Committed by convention but undocumented, so the first job is to write `blkdev(9E)` upstream |
+| `ddi-cmlb-sys` | `cmlb.h` | none | `misc/cmlb` | none | Planned, private by omission |
+| `illumos-kernel-private-sys` | `virtio.h` (`io/virtio/`), `vnode.h`/`vfs.h`, `taskq.h` (raw), `zone.h`, items from `esunddi.h` | none | varies | none | Planned. Private, pinned to a gate commit, usable only with `--features unstable-gate-<hash>` |
+
+The earlier plan had separate crates for UFM, PCI, LDI and STREAMS and
+Cargo features for registers, interrupts, DMA and fault management inside
+`ddi-sys`. Both were dropped. All of those families resolve from `genunix`
+or `unix`, so they imply no `-N` dependency, and declarations cost nothing
+to compile. A split would only have added names. The boundary that
+matters is the kernel module a symbol comes from, and `xtask kernel-check`
+verifies that boundary for every symbol (section 8.1).
 
 A handful of rules keep these boundaries meaningful.
 
 A `-sys` crate declares only what appears in its listed headers and that
 either has a section 9 page or is present in its mapfile. Anything else
 belongs in the private tier. It never goes into a Committed crate "just for
-now", because "for now" has a way of becoming permanent.
+now", because "for now" has a way of becoming permanent. There are a few
+documented exceptions, each explained at the item. `uioskip` and `uiocopy`
+have neither a page nor a mapfile entry, but the safe `Uio` needs the first
+and many gate drivers use both. `struct pollhead`, `list_t` and
+`avl_tree_t` take their layouts from `_impl` headers, because `chpoll(9E)`
+and the list and AVL pages require drivers to embed them. `esballoca` and
+`desballoca` are documented on `esballoc(9F)` but prototyped in
+`sys/strsubr.h`.
 
 Every declaration carries a doc comment that names its manual page and
 interface level, in the form ``/// `kmem_alloc(9F)`. Architecture independent
-level 1 (DDI/DKI).`` A CI script, `xtask lint-man`, checks that the named
-page exists under `usr/src/man/man9*` and that its interface level is not
-marked obsolete.
+level 1 (DDI/DKI).`` Pages without an INTERFACE LEVEL section are quoted
+as ``Interface stability: Committed.`` from their ATTRIBUTES table, and the
+few pages with neither say ``No interface level given.`` `xtask lint-man`
+checks that the named page exists, that the quoted text is exactly what the
+page says, and that the page does not mark the item obsolete or private.
 
 `-sys` crates contain no `impl` blocks apart from `Default` and `Debug` on
 plain data. No allocation, no wrappers, no `unsafe fn` bodies. Oxide's
@@ -292,7 +313,8 @@ needs no `extern_types`.
 
 Architecture differences, such as `ddi_isa.h` living under `uts/intel/sys/`
 rather than `common/`, are handled with `cfg(target_arch)` modules inside
-the same crate.
+the same crate. The ISA DMA engine from `uts/intel/sys/dma_engine.h` is the
+first such module.
 
 Each `-sys` crate's `Cargo.toml` carries `[package.metadata.kmod]` with a
 `depends` list such as `["misc/mac"]`. The link tool assembles the `-N`
@@ -316,9 +338,12 @@ pub struct DdiError;                    // dev_ops, and every ddi_* that returns
 pub type Result<T, E = Errno> = core::result::Result<T, E>;
 ```
 
-The property functions have a third space (`DDI_PROP_NOT_FOUND` and
-friends). They will get their own `PropError` when the property API grows
-beyond the two helpers that exist today.
+Families with richer codes get a small enum of their own rather than a
+number. `PropError` covers the `DDI_PROP_*` codes, `DmaError` the
+`DDI_DMA_*` codes, `IntrError` the `DDI_E*` codes of the interrupt
+functions and `RegError` the bounds and alignment checks of register
+access. Where "not found" is an ordinary answer rather than a failure, as
+for a property or a name-value pair, it becomes `Ok(None)`.
 
 ### 5.2 Module and driver definition
 
@@ -372,12 +397,15 @@ pub struct Atomic(..);          // interrupt or otherwise non-blocking context
 impl<T> KBox<T> {
     pub fn new(v: T, _: &Sleepable) -> KBox<T>;          // KM_SLEEP: cannot fail
     pub fn try_new(v: T) -> Result<KBox<T>, Errno>;      // KM_NOSLEEP: allowed anywhere
+    pub fn try_new_or_return(v: T) -> Result<KBox<T>, T>; // KM_NOSLEEP, value handed back
 }
 ```
 
 Entry points receive whichever token matches how the kernel calls them.
 `attach`, `detach`, `open`, `close`, `read`, `write` and `ioctl` receive a
-`&Sleepable`. Interrupt handlers and `ks_update` will receive an `&Atomic`.
+`&Sleepable`, and so do task queue functions and periodic callbacks, which
+run on kernel threads. Hardware and soft interrupt handlers and `timeout(9F)`
+callbacks receive an `&Atomic`.
 Neither token is `Copy`, neither is `Send`, and neither can be constructed
 by a driver, so a `Sleepable` cannot be stashed away and reused inside an
 interrupt handler.
@@ -389,7 +417,10 @@ somewhere. A driver may opt in to a `KM_SLEEP` global allocator with the
 cost.
 
 `Mutex<T>::lock` takes no token, because `mutex_enter` never sleeps for
-memory. `CondVar::wait` requires a `&Sleepable`.
+memory. `CondVar::wait` requires a `&Sleepable`. The same idea runs through
+every module: whatever may block takes the token, and a non-blocking
+variant exists wherever the manual allows one, such as
+`TaskQueue::try_dispatch`, `DmaHandle::try_new` and `NvList::try_new`.
 
 ### 5.4 Locks own their data
 
@@ -414,10 +445,22 @@ while !g.ready {
 }
 ```
 
-`MUTEX_DRIVER` without an interrupt cookie is the only kind the safe layer
-exposes for now. The variant that blocks interrupts arrives with the `intr`
-feature and will take its cookie from `ddi_intr_get_pri`, so a spin mutex
-cannot be created without an interrupt handle to justify it.
+`Mutex::new` creates a `MUTEX_DRIVER` mutex without an interrupt cookie.
+A mutex that an interrupt handler takes is created with
+`Mutex::with_priority(value, pri)`, and the only way to obtain an
+`IntrPriority` is from an allocated interrupt or soft interrupt. A lock at
+interrupt priority therefore cannot exist without an interrupt to justify
+it. `Interrupts::alloc` takes a closure that builds the handler state once
+the priority is known, which is exactly when the locks inside it can be
+created.
+
+`RwLock<T>` and `Semaphore` follow the same pattern over `rw_*(9F)` and
+`sema_*(9F)`. `RwLockReadGuard::try_upgrade` hands the read guard back on
+failure, and `RwLockWriteGuard::downgrade` turns a write guard into a read
+guard. The timed waits of `CondVar` return a `WaitResult` that says
+whether the wait timed out, was interrupted by a signal or was woken. None
+of the guards is `Send`, because illumos requires the thread that took a
+lock to release it.
 
 ### 5.5 Handles carry the kernel's lifetime rules
 
@@ -439,17 +482,29 @@ dropping it calls `ddi_remove_minor_node`. Its constructor takes
 `Cred<'a>` wraps a `cred_t` for the duration of one entry point and offers
 `has_sys_devices_priv` over `drv_priv`, plus `uid` and `zone_id`.
 
-Two more handle types are designed but not yet written. For registers,
-`Regs<'a>` over `ddi_regs_map_setup` will expose `read_u32(off)` and
-`write_u32(off, v)`, with the access attributes (byte order, ordering)
-built once into a `ddi_device_acc_attr_t` and offsets checked against the
-mapped length at construction rather than on every access. For DMA, the
-chain `DmaHandle` to `DmaMem` to `DmaBinding<'mem>` will make it impossible
-to obtain a cookie from unbound memory; unbinding is simply the drop of the
-binding. For interrupts, `Interrupts::alloc(kind)` will return a set of
-slots, adding a handler will consume a slot and yield an armed interrupt
-whose drop disables and removes it, and the handler will receive an
-`&Atomic`.
+`RegMap` owns a mapping from `ddi_regs_map_setup(9F)` with the access
+attributes built once by `AccessAttr`. Access by byte offset is checked
+against the mapped length and the alignment and returns `RegError` rather
+than panicking, since a panic in the kernel is a system panic. For
+registers known at compile time, `RegBlock<LEN>` and `Reg<T, OFF>` check
+the bounds and alignment at compile time, so their accesses cannot fail.
+`PciConfig` owns a configuration space handle from `pci_config_setup(9F)`
+and walks the capability list with a guard against loops.
+
+DMA is a chain of owners. `DmaHandle` owns the handle, `DmaBuffer` owns the
+memory and the handle, and `DmaBinding<'a>` borrows the buffer mutably for
+as long as the device may use it. A cookie can only be obtained from a
+binding, and the CPU can only see the memory through the binding right
+after `sync_for_cpu`. Unbinding is the drop of the binding, and the order
+unbind, free memory, free handle holds even if a binding is leaked.
+
+`Interrupts<T>` allocates a set of vectors, refuses high-level interrupts
+whose handlers could not take ordinary locks, builds the handler state from
+the priority, registers one trampoline per vector and enables the set. Its
+drop disables, removes each handler, which waits for running handlers, frees
+the vectors and only then drops the state. `SoftInterrupt<T>` does the
+same for one soft interrupt, whose `trigger` may be called from any
+context.
 
 ### 5.6 ioctl arguments are typed and model-aware
 
@@ -481,12 +536,80 @@ never allocate. Rust's `panic!` reaches `panic(9F)` the same way, and
 `DevInfo::warn` and `DevInfo::note` use `dev_err(9F)` so that the message
 is prefixed with the driver name and instance.
 
-### 5.8 What deliberately stays unsafe
+### 5.8 Properties
+
+`DevInfo::props()` returns a `Props` view with a fixed scope: which minor
+device the properties belong to and whether a lookup may continue to the
+parent nodes. The default matches any minor and stays on the node, which is
+what a driver reading its `.conf` file wants. Lookups return
+`Result<Option<T>, PropError>`, so a missing property is not an error.
+Values the kernel allocates come back as `PropBuf<T>`, `PropString` and
+`PropStrings`, which free themselves with `ddi_prop_free(9F)`. Updates copy
+the value, so the driver's data need not outlive the call. Every property
+function in the manual is restricted to user and kernel context, so every
+method takes the sleepable token.
+
+### 5.9 Callbacks own their state
+
+Many DDI functions take a function pointer and a `void *` argument and call
+back later: `timeout(9F)`, `ddi_periodic_add(9F)`, `ddi_taskq_dispatch(9F)`,
+`ddi_intr_add_handler(9F)` and `ddi_intr_add_softint(9F)`. The safe layer
+handles all of them the same way. The Rust closure or state goes into a
+`KBox`, which has a stable address. The kernel receives that address and a
+trampoline monomorphised for the closure type. The Rust value that
+represents the registration owns the box and frees it only after the
+kernel guarantees that the callback can no longer run: after `untimeout`,
+after `ddi_periodic_delete`, after `ddi_taskq_destroy` has drained the
+queue, or after `ddi_intr_remove_handler` has waited for running handlers.
+
+The waiting has a consequence that the types cannot express, and the
+documentation states it prominently. Dropping a `Timeout`, a `Periodic`,
+an `Interrupts` or a `SoftInterrupt` waits for a running callback, so it
+must not happen while holding a lock that the callback takes, and a
+`Periodic` must never be dropped from its own callback. A `Timeout` may be
+dropped from its own callback, because `untimeout` detects that case.
+
+`TaskQueue::suspend` returns a guard rather than setting a flag, because
+`ddi_taskq_suspend` holds a reader-writer lock until the matching resume,
+which must come from the same thread. The guard is neither `Send` nor
+`Sync`, and it borrows the queue, so the queue cannot be destroyed while it
+is suspended.
+
+### 5.10 Statistics, name-value lists and layered devices
+
+`NamedKstat` and `TypedKstat<S>` publish a named kstat. The kstat owns a
+mutex whose address goes into `ks_lock`, and the data can only be reached
+by locking it, so a snapshot by `kstat(8)` never sees a half-written
+value. The `named_kstat!` macro declares a `#[repr(C)]` structure of
+`KstatNamed<T>` fields and checks at compile time that each name fits.
+`IoKstat` covers the I/O kstat type with the queue accounting functions.
+
+`NvList<P>` owns a name-value list. The allocation flag given to
+`nvlist_alloc(9F)` governs every later allocation of the list, so it is a
+type parameter: a list created with the sleepable token is `KmSleep` and
+its adds require the token, while a `KmNoSleep` list may be filled from
+any context and its adds may fail with `ENOMEM`. Lookups borrow from the
+list, and the methods that change it take `&mut self`, which is how the
+rule that a pair must not be used after it was removed becomes a borrow
+error. A typed lookup matches on name and type together, as the kernel
+does, so a pair of another type reads as absent.
+
+`LdiHandle` opens another device through the layered driver interface. It
+takes a reference on the credential it was opened with and closes with the
+same credential, as `ldi_close(9F)` asks, whether it is closed explicitly
+or dropped. `Cred::kernel()` gives the kernel's own credential for work a
+driver does on its own behalf. The manual forbids opening layered devices
+from `attach(9E)`, `detach(9E)` and `power(9E)`; the token cannot express
+that, so the documentation does.
+
+### 5.11 What deliberately stays unsafe
 
 A register read at a wrong offset is a hardware bug, not a memory-safety
-bug, so `Regs::read_u32` will be a safe function. On the other side,
+bug, so the register accessors are safe functions. On the other side,
 `ddi_get_soft_state` with an arbitrary instance number, raw `mblk_t`
-manipulation and everything in the private tier remain `unsafe fn` with
+manipulation, the typed LDI ioctls (the target decides how many bytes it
+copies under `FKIOCTL`, so the caller must promise that the command matches
+the type) and everything in the private tier remain `unsafe fn` with
 documented preconditions. The safe crate should never claim more than the
 manual page guarantees.
 
@@ -540,42 +663,108 @@ illumos-ddi/
   Cargo.toml                 workspace
   rust-toolchain.toml        stable for check/test; the nightly is pinned in xtask
   targets/x86_64-illumos-kmod.json
-  crates/ddi-sys/            core raw bindings; features intr, dma, regs, fm, kstat
+  crates/ddi-sys/            core raw bindings, one module per family, no features
+  crates/ddi-mac-sys/        GLDv3 MAC provider interface (misc/mac)
+  crates/ddi-scsa-sys/       SCSI target and HBA interfaces (misc/scsi)
+  crates/ddi-usba-sys/       USB client and host controller interfaces (misc/usba)
+  crates/ddi-neti-sys/       network information and packet hooks (misc/neti, misc/hook)
+  crates/ddi-ksensor-sys/    kernel sensors (genunix)
+  crates/ddi-pcmcia-sys/     PC Card services (genunix)
+  crates/ddi-gld-sys/        GLDv2 (misc/gld)
+  crates/ddi-ktest-sys/      kernel test framework (drv/ktest)
   crates/ddi/                core safe layer, including the module! macro
-  crates/ddi-<subsys>-sys/   one per row in section 4, added as needed
-  crates/ddi-<subsys>/
   examples/rnull/            pseudo char driver: read gives EOF, write discards, three ioctls
-  examples/…                 later: ramdisk over blkdev, pchtemp over ksensor
-  xtask/                     build, link, deps; layout-check and lint-man are planned
+  examples/rselftest/        pseudo driver that runs a self-test of the safe layer in the kernel
+  xtask/                     build, link, deps, lint-man, kernel-check
   docs/DESIGN.md             this file
   docs/ddi-inventory.md      header, manual page and mapfile inventory from the gate
 ```
 
 ## 8. Verification
 
-### 8.1 Layout tests from the running kernel's CTF
+### 8.1 Layouts and symbols against the running kernel
 
-Every `#[repr(C)]` structure in a `-sys` crate is to be listed, with its
-fields, in a `layout.toml` next to the crate. `xtask layout-check`, run on
-an illumos host, asks the kernel itself for the truth:
+`xtask kernel-check` compares the `-sys` crates with a running kernel and
+needs nothing from the gate source. It collects every `size_of` and
+`offset_of!` assertion and every function and static declared in an
+`extern` block, and writes an `mdb(1)` script that asks the kernel's CTF
+data for each size and offset and asks `::whatis` where each symbol lives.
+The kernel host runs the script and the tool reads the output back:
 
 ```
-echo '::sizeof struct dev_ops; ::offsetof struct dev_ops devo_attach' | mdb -k
+cargo xtask kernel-check --emit | ssh root@host mdb -k | cargo xtask kernel-check --verify -
 ```
 
-(or `ctfdump -c /kernel/amd64/genunix` when a live kernel is not wanted)
-and generates `tests/layout_generated.rs` containing `size_of` and
-`offset_of!` assertions. The generated file is checked in per gate release,
-so `cargo test --target x86_64-unknown-illumos` on any host re-verifies the
-layouts. This replaces trusting hand-typed structures without shipping
-bindgen output. The `mdb` queries it depends on were exercised during M1.
+A symbol passes only if the kernel exports it and it resolves from `genunix`,
+`unix` or a module the crate declares in its `[package.metadata.kmod]`
+table. That turns the crate boundary of section 4 into something the tool
+checks. Fields that store C bit-fields as whole bytes, and anonymous unions
+that CTF cannot name, are reported separately and are covered by the size
+of the containing structure.
 
-### 8.2 Manual page lint
+The run on `oibldofgate` (illumos `cda5b9a49f`, OpenIndiana Hipster
+2026.04) on 26 September 2026 gave these results.
 
-`xtask lint-man --gate $GATE` parses every `/// name(9X)` doc comment in the
-`-sys` crates, checks that the page exists and that its interface level is
-not obsolete, and records the Committed, Evolving or Private status from the
-`ATTRIBUTES` table in the generated rustdoc.
+| Crate | Sizes | Offsets | Symbols | Note |
+| --- | --- | --- | --- | --- |
+| `ddi-sys` | 53 of 60 | 185 of 185 | 983 of 984 | 7 anonymous unions; `ddi_ncpus_expected` postdates this kernel |
+| `ddi-mac-sys` | 22 of 26 | 52 of 52 | 30 of 30 | 4 anonymous enumerations |
+| `ddi-scsa-sys` | 16 of 20 | 87 of 103 | 80 of 80 | 4 anonymous members; 10 bytes hold C bit-fields |
+| `ddi-usba-sys` | 26 of 29 | 126 of 134 | 65 of 65 | 3 descriptor types absent from `usba`'s CTF |
+| `ddi-neti-sys` | 7 of 7 | 30 of 30 | 34 of 34 | |
+| `ddi-ksensor-sys` | 3 of 3 | 7 of 7 | 6 of 6 | |
+| `ddi-pcmcia-sys` | 68 of 84 | 175 of 201 | 83 of 83 | nested and anonymous structures without a CTF name |
+| `ddi-gld-sys` | 7 of 7 | 41 of 41 | 14 of 14 | `misc/gld` loaded for the check |
+| `ddi-ktest-sys` | not checked | not checked | 16 of 16 | `drv/ktest` is not installed on the image; its symbols were read from the packaged module |
+
+No size, no offset and no symbol disagreed with the kernel. Every count
+below the total is a type that CTF cannot name; those types are covered by
+the size of the structure that contains them. The PC Card, USB and GLDv2
+assertions were also compiled as C `_Static_assert`s against the gate
+headers with clang, which covers the types CTF does not name. The full
+output is in the workspace under
+`logs/oibldofgate/20260926-kernel-check.log`.
+
+It found three real problems, all fixed. `min(9F)` and `max(9F)` are
+defined in `subr.c` but not exported by the running kernel, so they were
+removed; a module calling them would not load. `ddi_ncpus_expected(9F)` was
+added to the gate in August 2026, after this kernel was built, and is kept
+with a note. A binding for the interrupt block cookie existed twice with
+different types and was merged.
+
+### 8.2 Manual page lint and coverage
+
+`xtask lint-man --gate $GATE` parses the first line of every doc comment
+in the `-sys` crates that cites a section 9 page. It resolves the name
+through the NAME and SYNOPSIS sections and the `Manlink` files, checks that
+the quoted interface level is exactly what the page says, and rejects
+anything the page marks obsolete or a "private DDI function". `--fix`
+rewrites the first lines to the canonical text. `--coverage` compares every
+prototype in section 9F with the declarations, and `--mapfile-gaps` lists
+the documented functions that `ddi.mapfile` does not contain.
+
+| Measure | Count |
+| --- | --- |
+| 9F prototypes on pages that are not obsolete or private | 1183 |
+| bound in the `-sys` crates | 1183 |
+| pages skipped as obsolete or "private DDI function" | 27 |
+| C macros without a symbol, left to the safe layer | 47 |
+| documented, but not exported by the running kernel | 9 |
+| documented functions in `ddi-sys` absent from `ddi.mapfile` | 497 |
+
+With `-sys` declarations counted as a whole, the crates declare 1304
+functions. The difference to 1183 is functions that the mapfiles list
+without a manual page and the few documented exceptions of section 4.
+
+The lint found nine documented functions the kernel does not export.
+`atomic_inc_ptr`, `atomic_dec_ptr` and their `_nv` forms,
+`id_allocff_specific_nosleep`, `net_netidtozonid` and
+`mac_prop_info_set_default_uint16` appear in the manual but in no header
+and no kernel symbol table. `min` and `max` are declared and defined but
+not exported. The bindings also record, at the item concerned, every place
+where a page and its header disagree about a prototype, a structure member
+or a constant; in each case the header wins. Both lists are candidates for
+upstream manual fixes.
 
 ### 8.3 Host-side tests
 
@@ -588,8 +777,36 @@ outside the kernel.
 ### 8.4 In-kernel tests
 
 `rnull` is loaded on `oibldofgate` (root, global zone) with `add_drv` and
-exercised with `dd`, a small ioctl test program and `rem_drv`. Later, tests
-can register with `ktest(9F)` once that framework's interface has settled.
+exercised with `dd`, a small ioctl test program and `rem_drv`.
+
+`rselftest` is a pseudo driver that tests the safe layer from inside the
+kernel. When it attaches it runs 35 checks over properties from its `.conf`
+file and published by itself, mutexes, reader-writer locks with upgrade and
+downgrade, semaphores, condition variable timeouts, ticks, `delay`, busy
+waiting, `lbolt`, one-shot timeouts and their cancellation, task queues
+with blocking and non-blocking dispatch, and name-value lists including
+packing in both encodings. It logs each result with `dev_err(9F)`, counts
+them in a kstat and reports them through an ioctl. A second ioctl runs 7
+layered-device checks, which the manual forbids in `attach`: it opens its
+own node through LDI and reads a byte pattern through a kernel-space `uio`,
+and writes to `/dev/null` with the kernel credential. A periodic timer runs
+while the driver is attached.
+
+On 26 September 2026 all 42 checks passed on `oibldofgate`. The periodic
+timer at 10 ms ran 100 times per second, `prtconf -v` showed the six
+published properties, `kstat -m rselftest` showed the counters, and
+`rem_drv` unloaded the module and removed the kstat and the node. The
+first run found two wrong expectations in the tests, not in the library. A
+typed name-value lookup of the wrong type reads as absent, which the
+module documentation now states, and `/dev/zero` cannot serve a kernel
+caller at all, because its read routine uses `uzero` regardless of the
+segment, which is why the LDI test reads from the driver itself. The logs
+are in the workspace under `logs/oibldofgate/20260926-rselftest-*`.
+
+Register access, PCI configuration space, interrupts and DMA need a device
+to bind to and are not covered by `rselftest`. They were checked against
+the gate source and the compiler only. Tests can also register with
+`ktest(9F)`, whose bindings now exist in `ddi-ktest-sys`.
 
 ### 8.5 Test infrastructure
 
@@ -647,26 +864,41 @@ counted correctly, a read returning end of file, the stats and reset
 ioctls, and `ENOTTY` for an unknown command. A 1 MiB `dd` ran at 2.5 GiB/s.
 The `dev_err` notices appeared in `dmesg`, and `rem_drv` unloaded the module
 cleanly. While loaded, DTrace listed 456 `fbt` probes on the module and
-`mdb -k` disassembled `rnull\`_init`. Two things from M1 remain open: the
-`layout-check` tool, whose `mdb` queries are proven, and the strict
-`-z defs -M ddi.mapfile` link, which is blocked on the two mapfile gaps
-described in section 3.3.
+`mdb -k` disassembled `rnull\`_init`. Two things from M1 remained open. The
+layout check became `xtask kernel-check` in M2. The strict
+`-z defs -M ddi.mapfile` link is still blocked, now on the much larger set
+of mapfile gaps described in section 3.3.
 
-M2 gives the framework a hardware shape: the `regs`, `intr` and `dma`
-features, and a port of `pchtemp` (ksensor, Evolving tier) as the second
-example, chosen because a reference C implementation exists to compare
-against.
+M2, the complete binding surface and the safe layer, was completed on 26
+September 2026. Every function on a non-obsolete section 9F page is bound,
+across `ddi-sys` and eight subsystem crates, apart from the C macros that
+have no symbol and the documented functions the kernel does not export.
+Every binding was checked against the running kernel's type data and symbol
+table with `xtask kernel-check`, and every doc comment against its page with
+`xtask lint-man`. The safe layer gained properties, reader-writer locks,
+semaphores, timed condition variable waits, locks at interrupt priority,
+timers, task queues, kstats, register and PCI configuration access,
+interrupts and soft interrupts, DMA, name-value lists and LDI.
+`rselftest` exercised everything that does not need hardware in the running
+kernel, and all 42 checks passed.
 
-M3 is block devices: `ddi-blkdev-sys` and `ddi-blkdev`, a ramdisk example,
+M3 is hardware: a port of `pchtemp` over `ddi-ksensor-sys`, chosen because
+a reference C implementation exists to compare against, which exercises
+PCI configuration space and register access on a real device, followed by
+a driver that uses interrupts and DMA.
+
+M4 is block devices: `ddi-blkdev-sys` and `ddi-blkdev`, a ramdisk example,
 and the missing `blkdev(9E)` manual pages written and sent upstream.
 
-M4 is networking: `ddi-mac-sys` and `ddi-mac`, compared against `xde`, with
-an invitation to Oxide to converge `illumos-sys-hdrs` onto the shared
-crates.
+M5 is networking: a safe `ddi-mac` over `ddi-mac-sys`, compared against
+`xde`, with an invitation to Oxide to converge `illumos-sys-hdrs` onto the
+shared crates. Safe layers for SCSA, USBA and STREAMS follow the same
+pattern when a driver needs them.
 
-M5 is gate integration: a `Makefile.rust` for `usr/src/uts` that invokes
+M6 is gate integration: a `Makefile.rust` for `usr/src/uts` that invokes
 cargo with a pinned toolchain and reuses the link rule from
-`Makefile.targ`, together with an IPD for illumos.
+`Makefile.targ`, together with an IPD for illumos, and the mapfile and
+manual page fixes that section 8.2 collected.
 
 ## 10. Open questions
 
@@ -689,4 +921,10 @@ MAC is versioned through `MAC_VERSION_V1`. Whether to expose that as a const
 generic or as a Cargo feature is open.
 
 CTF for Rust types is unresolved. We can wait for `ctfconvert` to learn Rust
-DWARF, or generate CTF ourselves from the `layout.toml` files.
+DWARF, or generate CTF ourselves from the layout assertions that
+`xtask kernel-check` already collects.
+
+The documentation of the kernel side of the safe layer relies on rules the
+types cannot express: which drops wait for a callback, and which entry
+points may not open layered devices. Whether a lint or a runtime assertion
+over `servicing_interrupt` should back those up is open.

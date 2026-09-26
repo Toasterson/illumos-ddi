@@ -7,6 +7,9 @@
 //! every slot, and the command enumerations the kernel passes to
 //! `attach(9E)`, `detach(9E)` and `getinfo(9E)`.
 
+use crate::bio::{aio_req, buf};
+use crate::poll::pollhead;
+use crate::streams::streamtab;
 use crate::types::*;
 use crate::uio::uio;
 

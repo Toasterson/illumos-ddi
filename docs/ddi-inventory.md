@@ -85,9 +85,11 @@ whether it is public.
 | `usr/src/uts/intel/sys/ddi_isa.h` | ISA-specific access plumbing | per architecture |
 
 Two of these deserve a comment. `sunddi.h` at 65 kilobytes and
-`ddi_impldefs.h` at 43 kilobytes are the reason the core crate is split
-into features (`intr`, `dma`, `regs`, `fm`, `kstat`) rather than bound as one
-block. And `ddi_isa.h` does not exist under `common/` at all. It lives in
+`ddi_impldefs.h` at 43 kilobytes looked like a reason to split the core
+crate into Cargo features. That plan was dropped, because every one of
+these families resolves from `genunix` or `unix` and declarations cost
+nothing to compile; the core crate has one module per family instead. And
+`ddi_isa.h` does not exist under `common/` at all. It lives in
 `usr/src/uts/intel/sys/` and `usr/src/uts/sparc/sys/`, which is why the
 design calls for `cfg(target_arch)` modules.
 
@@ -111,7 +113,7 @@ table lists them with the private headers to stay away from.
 | PCI / PCIe | `pci.h` (51K), `pcie.h` (44K), `pci_cap.h` | `pci_impl.h`, `pcie_impl.h` | `pci_config_*(9F)` 5 | genunix |
 | LDI | `sunldi.h` | `sunldi_impl.h` | `ldi_*(9F)` 24 | genunix |
 | FMA | `ddifm.h`, `fm/protocol.h`, `fm/util.h` | `ddifm_impl.h` | `ddi_fm_*(9F)` 6, `ddi_fm_error(9S)` | genunix |
-| ksensor | `sensors.h` (the header says the interfaces are "evolving and will change") | `ksensor_impl.h` | `ksensor(9E)`, `ksensor_ops(9E)`, 2 `ksensor_*(9F)` | `misc/ksensor`, `ksensor.mapfile` |
+| ksensor | `sensors.h` (the header says the interfaces are "evolving and will change") | `ksensor_impl.h` | `ksensor(9E)`, `ksensor_ops(9E)`, 2 `ksensor_*(9F)` | in `genunix` (`ksensor.o` is in `GENUNIX_OBJS`), `ksensor.mapfile` |
 | KGPIO | | `gpio/kgpio_provider.h` (describes itself as a private interface) | | `gpio.mapfile` |
 | cmlb | `cmlb.h` | `cmlb_impl.h` | | `misc/cmlb` |
 | ktest | `ktest.h` | `ktest_impl.h` | | |
@@ -204,3 +206,72 @@ For automated classification of a binding surface, the practical rule that
 falls out of these numbers is to parse `.SH INTERFACE LEVEL` first, treat
 `Interface Stability` as a refinement where it exists, and treat the absence
 of both as "unclassified, assume private".
+
+## Coverage of the binding surface
+
+This section was added on 26 September 2026, when the binding surface was
+completed, and is produced by `cargo xtask lint-man --gate <gate>
+--markdown` against the same gate commit. A name counts as covered when a
+`-sys` crate declares a function of that name; the lint separately checks
+that its doc comment quotes the right page and level.
+
+| Measure | Count |
+| --- | --- |
+| 9F prototypes on pages that are not obsolete or private | 1183 |
+| bound in the `-sys` crates | 1183 |
+| pages skipped as obsolete or "private DDI function" | 27 |
+| C macros without a symbol, left to the safe layer | 47 |
+| documented, but not exported by the running kernel | 9 |
+
+The declared functions and statics are spread over the crates as follows.
+The core crate holds everything that resolves from `genunix` or `unix`;
+each subsystem crate holds what its kernel module exports.
+
+| Crate | Symbols declared | Module |
+| --- | --- | --- |
+| `ddi-sys` | 984 | `genunix`, `unix` |
+| `ddi-mac-sys` | 30 | `misc/mac` |
+| `ddi-scsa-sys` | 80 | `misc/scsi` |
+| `ddi-usba-sys` | 65 | `misc/usba` |
+| `ddi-neti-sys` | 34 | `misc/neti`, `misc/hook` |
+| `ddi-ksensor-sys` | 6 | `genunix` |
+| `ddi-pcmcia-sys` | 83 | `genunix` |
+| `ddi-gld-sys` | 14 | `misc/gld` |
+| `ddi-ktest-sys` | 16 | `drv/ktest` |
+
+## Findings for upstream
+
+Binding the whole surface turned up a number of things that would be worth
+fixing in the gate. They are recorded here so that they can be turned into
+issues.
+
+The `ddi` mapfile is far from complete. 497 functions that have a section
+9F page and that the kernel exports are not listed, among them
+`getminor`, `uioskip`, the semaphore functions, most property lookups and
+all of LDI. `cargo xtask lint-man --mapfile-gaps` prints the full list.
+
+Nine documented functions do not exist for drivers. `atomic_inc_ptr`,
+`atomic_dec_ptr` and their `_nv` forms, `id_allocff_specific_nosleep`,
+`net_netidtozonid` and `mac_prop_info_set_default_uint16` are in no header
+and no kernel symbol table. `min` and `max` are declared in `sys/systm.h`
+and defined in `subr.c` but not exported by the running kernel.
+
+Several pages disagree with their headers. Examples are the signatures of
+`net_hook_unregister`, `net_getlifaddr` and `net_getmtu`, the argument
+types of `scsi_reset_notify`, `scsi_ext_sense_fields`, `usb_get_cfg` and
+`csx_Get64`, and constant names such as `DTYPE_BRIDGE`, `KEY_RESERVE`,
+`ETHER_STAT_LP_CAP_REMFAULT` and `USB_DEV_PWRMASK_D*`. Each case is noted at
+the binding concerned.
+
+Some pages are wrong about behaviour. `gld(9F)` describes
+`GLD_LINKSTATE_UP` with the text for "down", `ktest_result_pass(9F)` says
+`ktest_msg_prepend` appends, and the `csx_DupHandle` and `csx_FreeHandle`
+pages describe work that the stubs in `cs_stubs.c` never do.
+
+`/dev/zero` cannot serve a read from inside the kernel. `mmrw` in
+`io/mem.c` zeroes the caller's buffer with `uzero` regardless of the
+segment flag of the `uio`, so a layered read from `/dev/zero` faults.
+
+`blkdev` still has no manual pages at all, and `esballoca` and
+`desballoca` are documented at the DDI level but prototyped only in the
+private `sys/strsubr.h`.

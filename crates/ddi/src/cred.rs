@@ -13,6 +13,20 @@ pub struct Cred<'a> {
     _life: PhantomData<&'a sys::cred_t>,
 }
 
+impl Cred<'static> {
+    /// The kernel's own credential, `kcred`, which holds every privilege.
+    ///
+    /// Use it only for work the driver does on its own behalf, such as
+    /// opening a layered device from a task queue, where there is no caller
+    /// whose credential would apply. Anything done on behalf of a caller must
+    /// use the caller's credential, or the privilege checks of the target are
+    /// bypassed. `kcred` is set up before any module loads and never freed.
+    pub fn kernel() -> Cred<'static> {
+        // SAFETY: `kcred` is a valid, permanent credential after boot.
+        unsafe { Cred::from_raw(sys::kcred) }
+    }
+}
+
 impl<'a> Cred<'a> {
     /// Wraps a `cred_t` pointer handed in by the kernel.
     ///
@@ -23,6 +37,8 @@ impl<'a> Cred<'a> {
     }
 
     /// Returns the raw pointer, for `9F` functions that are not wrapped yet.
+    ///
+    /// The pointer is only valid for the lifetime of this handle.
     pub fn as_raw(&self) -> *mut sys::cred_t {
         self.raw.as_ptr()
     }

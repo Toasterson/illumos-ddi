@@ -41,10 +41,17 @@ impl<T> KBox<T> {
     /// Allocates with `KM_NOSLEEP`. This is allowed from any context and
     /// fails with `ENOMEM` when memory is not available right away.
     pub fn try_new(value: T) -> Result<KBox<T>, Errno> {
+        Self::alloc(value, sys::KM_NOSLEEP).map_err(|_| Errno::ENOMEM)
+    }
+
+    /// Like [`KBox::try_new`], but hands the value back when memory is not
+    /// available, so that a caller in interrupt context can retry later or
+    /// return the value to its own caller instead of losing it.
+    pub fn try_new_or_return(value: T) -> Result<KBox<T>, T> {
         Self::alloc(value, sys::KM_NOSLEEP)
     }
 
-    fn alloc(value: T, flag: i32) -> Result<KBox<T>, Errno> {
+    fn alloc(value: T, flag: i32) -> Result<KBox<T>, T> {
         let () = Self::ALIGN_OK;
         let size = size_of::<T>();
         if size == 0 {
@@ -52,7 +59,7 @@ impl<T> KBox<T> {
         }
         let raw = unsafe { sys::kmem_alloc(size, flag) } as *mut T;
         let Some(ptr) = NonNull::new(raw) else {
-            return Err(Errno::ENOMEM);
+            return Err(value);
         };
         unsafe { ptr::write(ptr.as_ptr(), value) };
         Ok(KBox { ptr })

@@ -1,0 +1,15 @@
+[package]
+name = "ddi-ksensor-sys"
+description = "Raw bindings to the illumos kernel sensor framework (ksensor(9E), ksensor_*(9F))"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ddi-sys.workspace = true
+
+[package.metadata.kmod]
+depends = []
+mapfiles = ["ksensor"]

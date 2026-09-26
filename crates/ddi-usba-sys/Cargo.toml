@@ -1,0 +1,15 @@
+[package]
+name = "ddi-usba-sys"
+description = "Raw bindings to the illumos USB architecture (USBA client and host controller interfaces)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ddi-sys.workspace = true
+
+[package.metadata.kmod]
+depends = ["misc/usba"]
+mapfiles = []

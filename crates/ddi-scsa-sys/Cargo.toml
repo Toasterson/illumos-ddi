@@ -1,0 +1,15 @@
+[package]
+name = "ddi-scsa-sys"
+description = "Raw bindings to the illumos SCSI host bus adapter and target interfaces (SCSA, scsi_*(9F), tran_*(9E))"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ddi-sys.workspace = true
+
+[package.metadata.kmod]
+depends = ["misc/scsi"]
+mapfiles = []

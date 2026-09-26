@@ -2,22 +2,39 @@
 resolver = "3"
 members = [
   "crates/ddi-sys",
+  "crates/ddi-mac-sys",
+  "crates/ddi-scsa-sys",
+  "crates/ddi-usba-sys",
+  "crates/ddi-neti-sys",
+  "crates/ddi-ksensor-sys",
+  "crates/ddi-pcmcia-sys",
+  "crates/ddi-gld-sys",
+  "crates/ddi-ktest-sys",
   "crates/ddi",
   "examples/rnull",
+  "examples/rselftest",
   "xtask",
 ]
-default-members = ["crates/ddi-sys", "crates/ddi", "examples/rnull"]
+default-members = ["crates/ddi-sys", "crates/ddi", "examples/rnull", "examples/rselftest"]
 
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
 license = "MPL-2.0"
-repository = "https://code.aopc.cloud/OpenIndiana/illumos-ddi"
+repository = "https://code.aopc.cloud/illumos/illumos-ddi"
 rust-version = "1.97"
 
 [workspace.dependencies]
 ddi-sys = { path = "crates/ddi-sys" }
 ddi = { path = "crates/ddi" }
+ddi-mac-sys = { path = "crates/ddi-mac-sys" }
+ddi-scsa-sys = { path = "crates/ddi-scsa-sys" }
+ddi-usba-sys = { path = "crates/ddi-usba-sys" }
+ddi-neti-sys = { path = "crates/ddi-neti-sys" }
+ddi-ksensor-sys = { path = "crates/ddi-ksensor-sys" }
+ddi-pcmcia-sys = { path = "crates/ddi-pcmcia-sys" }
+ddi-gld-sys = { path = "crates/ddi-gld-sys" }
+ddi-ktest-sys = { path = "crates/ddi-ktest-sys" }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 serde_json = "1"
 

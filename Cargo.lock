@@ -11,8 +11,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "ddi-gld-sys"
+version = "0.0.1"
+dependencies = [
+ "ddi-sys",
+]
+
+[[package]]
+name = "ddi-ksensor-sys"
+version = "0.0.1"
+dependencies = [
+ "ddi-sys",
+]
+
+[[package]]
+name = "ddi-ktest-sys"
+version = "0.0.1"
+dependencies = [
+ "ddi-sys",
+]
+
+[[package]]
+name = "ddi-mac-sys"
+version = "0.0.1"
+dependencies = [
+ "ddi-sys",
+]
+
+[[package]]
+name = "ddi-neti-sys"
+version = "0.0.1"
+dependencies = [
+ "ddi-sys",
+]
+
+[[package]]
+name = "ddi-pcmcia-sys"
+version = "0.0.1"
+dependencies = [
+ "ddi-sys",
+]
+
+[[package]]
+name = "ddi-scsa-sys"
+version = "0.0.1"
+dependencies = [
+ "ddi-sys",
+]
+
+[[package]]
 name = "ddi-sys"
 version = "0.0.1"
+
+[[package]]
+name = "ddi-usba-sys"
+version = "0.0.1"
+dependencies = [
+ "ddi-sys",
+]
 
 [[package]]
 name = "itoa"
@@ -46,6 +102,14 @@ dependencies = [
 
 [[package]]
 name = "rnull"
+version = "0.0.1"
+dependencies = [
+ "ddi",
+ "zerocopy",
+]
+
+[[package]]
+name = "rselftest"
 version = "0.0.1"
 dependencies = [
  "ddi",

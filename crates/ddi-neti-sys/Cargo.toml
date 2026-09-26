@@ -1,0 +1,15 @@
+[package]
+name = "ddi-neti-sys"
+description = "Raw bindings to the illumos network information and packet hook interfaces (net_*(9F), hook_*(9F))"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ddi-sys.workspace = true
+
+[package.metadata.kmod]
+depends = ["misc/neti", "misc/hook"]
+mapfiles = []

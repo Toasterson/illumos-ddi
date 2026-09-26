@@ -4,6 +4,12 @@
 //! caller's data lives, how much of it there is, and at which file offset.
 //! `uiomove(9F)` is the one sanctioned way to move bytes between that
 //! description and kernel memory; it updates the structure as it goes.
+//! `ureadc(9F)` and `uwritec(9F)` do the same one character at a time, and
+//! `uio_copyin(9F)` and `uio_copyout(9F)` copy a plain buffer to or from
+//! whichever address space a `uio_seg_t` names.
+//!
+//! The header also declares `uiodup` and `uio_prefaultpages`, which have no
+//! manual page and are not in the `ddi` mapfile, so they are not bound.
 
 use crate::types::*;
 
@@ -80,13 +86,54 @@ unsafe extern "C" {
     /// caller's vectors, in the direction given by `rwflag`, and advances the
     /// `uio` accordingly. Returns 0 or an errno, typically `EFAULT`.
     pub fn uiomove(addr: *mut c_void, nbytes: size_t, rwflag: uio_rw_t, uiop: *mut uio) -> c_int;
-    /// `uiocopy(9F)`. illumos DDI specific (illumos DDI).
+    /// Declared in `sys/uio.h` and exported by `genunix`. There is no
+    /// manual page, and the `ddi` mapfile does not list it.
     ///
     /// Like [`uiomove`], but leaves the `uio` unchanged and reports the
-    /// number of bytes copied through `cbytes`.
+    /// number of bytes copied through `cbytes`. It is bound despite the
+    /// missing page because several drivers in the gate rely on it to peek
+    /// at a request before committing to it. A manual page and a mapfile
+    /// entry are the upstream fix.
     pub fn uiocopy(addr: *mut c_void, nbytes: size_t, rwflag: uio_rw_t, uiop: *mut uio, cbytes: *mut size_t) -> c_int;
-    /// `uioskip(9F)`. illumos DDI specific (illumos DDI).
+    /// Declared in `sys/uio.h` and exported by `genunix`. There is no
+    /// manual page, and the `ddi` mapfile does not list it.
     ///
-    /// Advances the `uio` by `nbytes` without transferring anything.
+    /// Advances the `uio` by `nbytes` without transferring anything. The
+    /// safe crate's `Uio::skip` and `Uio::discard_all` are built on it,
+    /// which is the reason it is bound. A manual page and a mapfile entry
+    /// are the upstream fix.
     pub fn uioskip(uiop: *mut uio, nbytes: size_t);
+    /// `ureadc(9F)`. Architecture independent level 1 (DDI/DKI).
+    ///
+    /// Transfers the single character `c` into the address space described
+    /// by the `uio` and updates the structure as [`uiomove`] would. Returns
+    /// 0 on success and `EFAULT` on failure. May be called from user,
+    /// interrupt or kernel context.
+    pub fn ureadc(c: c_int, uio_p: *mut uio) -> c_int;
+    /// `uwritec(9F)`. Architecture independent level 1 (DDI/DKI).
+    ///
+    /// Removes the next character from the address space described by the
+    /// `uio`, updates the structure as [`uiomove`] would, and returns that
+    /// character. Returns -1 if the `uio` is empty or a fault occurred. May
+    /// be called from user, interrupt or kernel context.
+    pub fn uwritec(uio_p: *mut uio) -> c_int;
+    /// `uio_copyin(9F)`. illumos DDI specific.
+    ///
+    /// Copies `n` bytes from `src`, which lies in the address space named by
+    /// `seg`, to the kernel address `dst`. With `UIO_USERSPACE` or
+    /// `UIO_USERISPACE` the copy behaves as `copyin(9F)` and may be called
+    /// from user context only; with `UIO_SYSSPACE` both addresses are kernel
+    /// addresses, the copy is performed with `kcopy(9F)`, and user or kernel
+    /// context is acceptable. Any other value of `seg` panics the system.
+    /// Returns 0 on success and -1 if a fault occurred.
+    pub fn uio_copyin(src: *const c_void, dst: *mut c_void, n: size_t, seg: uio_seg_t) -> c_int;
+    /// `uio_copyin(9F)`. illumos DDI specific.
+    ///
+    /// Copies `n` bytes from the kernel address `src` to `dst`, which lies
+    /// in the address space named by `seg`. It is the counterpart of
+    /// [`uio_copyin`] and follows the same rules about context and about
+    /// invalid values of `seg`. The function is documented on the
+    /// `uio_copyin(9F)` page as `uio_copyout`. Returns 0 on success and -1
+    /// if a fault occurred.
+    pub fn uio_copyout(src: *const c_void, dst: *mut c_void, n: size_t, seg: uio_seg_t) -> c_int;
 }

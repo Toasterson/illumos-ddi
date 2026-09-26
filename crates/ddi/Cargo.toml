@@ -14,7 +14,6 @@ panic-handler = []
 # Provide a #[global_allocator] that always uses KM_SLEEP. Only for
 # prototypes: it is unsound to allocate this way from interrupt context.
 global-alloc-sleep = []
-regs = ["ddi-sys/regs"]
 
 [dependencies]
 ddi-sys.workspace = true

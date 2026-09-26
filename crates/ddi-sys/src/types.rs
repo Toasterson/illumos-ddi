@@ -69,21 +69,9 @@ opaque! {
     /// corresponding `dev_ops` field to NULL; this crate does not bind nexus
     /// interfaces.
     bus_ops;
-    /// The STREAMS driver table, `struct streamtab`. It will be defined in a
-    /// separate `ddi-streams-sys` crate; here it exists only so that
-    /// `cb_ops.cb_str` has a pointer type.
-    streamtab;
-    /// The block I/O request structure, `buf(9S)`. It stays opaque until the
-    /// block-device family is bound.
-    buf;
-    /// The poll head structure that `chpoll(9E)` fills in.
-    pollhead;
     /// A process address space, `struct as`, as passed to `segmap(9E)`. The C
     /// name is a Rust keyword, hence the different spelling.
     addrspace;
-    /// An asynchronous I/O request, `struct aio_req`, as passed to `aread(9E)`
-    /// and `awrite(9E)`.
-    aio_req;
     /// The structure behind a register access handle, `ddi_acc_handle_t`.
     __ddi_acc_handle;
     /// The structure behind a DMA handle, `ddi_dma_handle_t`.
@@ -110,6 +98,15 @@ pub type ddi_periodic_t = *mut __ddi_periodic;
 pub type ddi_softint_handle_t = *mut __ddi_softint_handle;
 /// An interrupt handle returned by `ddi_intr_alloc(9F)`.
 pub type ddi_intr_handle_t = *mut __ddi_intr_handle;
+/// An interrupt block cookie, `ddi_iblock_cookie_t`. `sys/dditypes.h`
+/// declares it as a pointer to the private `struct __ddi_iblock_cookie`, but
+/// in practice it only ever carries an interrupt priority cast to a pointer.
+/// `DDI_INTR_PRI` produces one from the priority that `ddi_intr_get_pri(9F)`
+/// reports, `ddi_fm_init(9F)` returns one for the error handler, and
+/// `mutex_init(9F)` and `rw_init(9F)` take one as their last argument so
+/// that the lock blocks that interrupt while it is held. A `void *` is
+/// therefore the honest spelling.
+pub type ddi_iblock_cookie_t = *mut c_void;
 /// A device mapping cookie for the `devmap(9E)` framework. `ddidevmap.h`
 /// defines it as a plain `void *`.
 pub type devmap_cookie_t = *mut c_void;

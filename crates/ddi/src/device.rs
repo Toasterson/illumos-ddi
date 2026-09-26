@@ -1,4 +1,5 @@
-//! Device nodes, instance and minor numbers, minor nodes and properties.
+//! Device nodes, instance and minor numbers and minor nodes. Properties
+//! are in [`crate::prop`].
 
 use core::ffi::CStr;
 use core::ptr::NonNull;
@@ -116,21 +117,6 @@ impl DevInfo {
     /// attach.
     pub fn report(&self) {
         unsafe { sys::ddi_report_dev(self.as_raw()) }
-    }
-
-    /// Reads an integer property of this node, using `ddi_prop_get_int(9F)`
-    /// with `DDI_PROP_DONTPASS`. Returns `default` if the property does not
-    /// exist.
-    pub fn prop_int(&self, name: &CStr, default: i32) -> i32 {
-        unsafe {
-            sys::ddi_prop_get_int(sys::DDI_DEV_T_ANY, self.as_raw(), sys::DDI_PROP_DONTPASS, name.as_ptr(), default)
-        }
-    }
-
-    /// Reports whether this node has the named property, using
-    /// `ddi_prop_exists(9F)` with `DDI_PROP_DONTPASS`.
-    pub fn prop_exists(&self, name: &CStr) -> bool {
-        unsafe { sys::ddi_prop_exists(sys::DDI_DEV_T_ANY, self.as_raw(), sys::DDI_PROP_DONTPASS, name.as_ptr()) != 0 }
     }
 
     /// Creates a minor node with `ddi_create_minor_node(9F)`. The node is

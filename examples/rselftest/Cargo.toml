@@ -1,0 +1,20 @@
+[package]
+name = "rselftest"
+description = "A pseudo driver that exercises the safe DDI layer inside a running kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+ddi.workspace = true
+zerocopy.workspace = true
+
+[package.metadata.kmod]
+class = "drv"
+conf = "rselftest.conf"
+depends = []

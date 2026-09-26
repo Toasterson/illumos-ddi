@@ -1,0 +1,15 @@
+[package]
+name = "ddi-pcmcia-sys"
+description = "Raw bindings to the illumos PCMCIA card services interface (csx_*(9F))"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ddi-sys.workspace = true
+
+[package.metadata.kmod]
+depends = []
+mapfiles = []

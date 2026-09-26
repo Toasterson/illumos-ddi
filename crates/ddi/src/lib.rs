@@ -20,6 +20,11 @@
 //! A [`MinorNode`] calls `ddi_create_minor_node(9F)` when created and
 //! `ddi_remove_minor_node(9F)` when dropped.
 //!
+//! [`Props`] reads and writes device properties. Its lookups return
+//! `Ok(None)` for a missing property and hand back kernel-allocated values
+//! that free themselves, and every call demands the sleepable token because
+//! the manual restricts the property functions to user and kernel context.
+//!
 //! [`Uio`] and [`IoctlArg`] are the only ways to touch user memory, and both
 //! go through the DDI copy functions so that kernel callers through LDI are
 //! handled correctly.
@@ -37,34 +42,75 @@ pub use ddi_sys as sys;
 pub mod context;
 pub mod cred;
 pub mod device;
+pub mod dma;
 pub mod error;
+pub mod intr;
 pub mod ioctl;
 pub mod kmem;
+pub mod kstat;
+pub mod ldi;
 pub mod log;
 pub mod module;
+pub mod nvlist;
+pub mod pci;
+pub mod prop;
+pub mod regs;
 pub mod sync;
+pub mod taskq;
+pub mod time;
 pub mod uio;
 
-pub use context::Sleepable;
+pub use context::{Atomic, Sleepable};
 pub use cred::Cred;
 pub use device::{DevInfo, Instance, Minor, MinorKind, MinorNode, NodeType, OpenFlags, OpenType};
+pub use dma::{
+    DmaAttr, DmaBinding, DmaBuffer, DmaCache, DmaCookie, DmaCookies, DmaDirection, DmaError, DmaHandle, DmaMode,
+};
 pub use error::{DdiError, Errno, Result};
+pub use intr::{
+    Claimed, InterruptHandler, Interrupts, IntrCaps, IntrError, IntrKind, IntrPriority, IntrTypes, SoftInterrupt,
+    SoftInterruptHandler,
+};
 pub use ioctl::{DataModel, IoctlArg, IoctlCmd};
 pub use kmem::KBox;
+pub use kstat::{IoKstat, KstatDataType, KstatId, NamedKstat, TypedKstat};
+pub use ldi::{LdiFlags, LdiHandle, LdiIdent, LdiOpenType, LdiPropFlags};
 pub use module::{CharDevice, Driver};
-pub use sync::{CondVar, Mutex, MutexGuard};
+pub use nvlist::{
+    AllocPolicy, KmNoSleep, KmSleep, NvEncoding, NvList, NvListRef, NvPair, NvStrings, NvValue, PackedNvList,
+};
+pub use pci::{ClassCode, IdleSpeed, PciConfig};
+pub use prop::{PropBuf, PropError, PropString, PropStrings, Props};
+pub use regs::{AccessAttr, DataOrder, Endian, FaultMode, Reg, RegBlock, RegError, RegMap, RegValue, RepMode};
+pub use sync::{CondVar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Semaphore, WaitResult};
+pub use taskq::TaskQueue;
+pub use time::{HrTime, Periodic, Ticks, Timeout};
 pub use uio::Uio;
 
 /// The names a driver normally needs, for a single `use ddi::prelude::*;`.
 pub mod prelude {
-    pub use crate::context::Sleepable;
+    pub use crate::context::{Atomic, Sleepable};
     pub use crate::cred::Cred;
     pub use crate::device::{DevInfo, Instance, Minor, MinorKind, MinorNode, NodeType, OpenFlags, OpenType};
+    pub use crate::dma::{DmaAttr, DmaBinding, DmaBuffer, DmaCache, DmaDirection, DmaError, DmaHandle, DmaMode};
     pub use crate::error::{DdiError, Errno, Result};
+    pub use crate::intr::{
+        Claimed, InterruptHandler, Interrupts, IntrError, IntrKind, IntrPriority, SoftInterrupt, SoftInterruptHandler,
+    };
     pub use crate::ioctl::{DataModel, IoctlArg, IoctlCmd};
     pub use crate::kmem::KBox;
+    pub use crate::kstat::{IoKstat, KstatDataType, KstatId, NamedKstat, TypedKstat};
+    pub use crate::ldi::{LdiFlags, LdiHandle, LdiIdent};
     pub use crate::module::{CharDevice, Driver};
-    pub use crate::sync::{CondVar, Mutex, MutexGuard};
+    pub use crate::nvlist::{NvEncoding, NvList, NvListRef};
+    pub use crate::pci::PciConfig;
+    pub use crate::prop::{PropBuf, PropError, PropString, PropStrings, Props};
+    pub use crate::regs::{AccessAttr, DataOrder, Endian, FaultMode, Reg, RegBlock, RegError, RegMap, RepMode};
+    pub use crate::sync::{
+        CondVar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Semaphore, WaitResult,
+    };
+    pub use crate::taskq::TaskQueue;
+    pub use crate::time::{HrTime, Periodic, Ticks, Timeout};
     pub use crate::uio::Uio;
-    pub use crate::{kcont, knote, kwarn, module};
+    pub use crate::{kcont, knote, kwarn, module, named_kstat};
 }

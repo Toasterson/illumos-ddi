@@ -1,21 +1,30 @@
 //! Builds and links illumos kernel modules written against `ddi`.
 //!
-//! Three subcommands are available. `build <pkg>` compiles the package for
+//! Five subcommands are available. `build <pkg>` compiles the package for
 //! the kernel target with the pinned nightly and `-Zbuild-std`, producing
 //! `<pkg>.a`. `link <pkg>` runs on illumos only and links that archive into
 //! a kernel module with `ld -ztype=kmod`. `deps <pkg>` prints the module
-//! dependencies and mapfiles the crate graph implies.
+//! dependencies and mapfiles the crate graph implies. `lint-man` checks
+//! every manual reference in the `-sys` crates against a gate checkout and,
+//! with `--coverage`, lists the section 9F names that are not bound yet.
+//! `kernel-check` compares the layouts and symbols of the `-sys` crates with
+//! a running kernel through an `mdb(1)` script.
 //!
 //! ```text
 //! cargo xtask build <pkg>
 //! cargo xtask link  <pkg>
 //! cargo xtask deps  <pkg>
+//! cargo xtask lint-man [--gate <illumos-gate>] [--coverage | --markdown]
+//! cargo xtask kernel-check --emit | ssh root@host mdb -k | cargo xtask kernel-check --verify -
 //! ```
 //!
 //! The `-N` dependencies and the mapfile names are collected from the
 //! `[package.metadata.kmod]` table of every crate in the package's
 //! dependency graph. A driver therefore never spells them out itself; see
 //! section 6 of `docs/DESIGN.md`.
+
+mod kernel_check;
+mod lint_man;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -36,10 +45,9 @@ fn main() -> ExitCode {
             println!("mapfiles: {:?}", d.mapfiles);
             println!("class: {}", d.class);
         }),
-        [cmd, ..] if cmd == "layout-check" || cmd == "lint-man" => {
-            Err(format!("{cmd}: planned for M1, see docs/DESIGN.md §8"))
-        }
-        _ => Err("usage: cargo xtask (build [--debug]|link|deps) <package>".into()),
+        [cmd, rest @ ..] if cmd == "lint-man" => lint_man::run(rest),
+        [cmd, rest @ ..] if cmd == "kernel-check" => kernel_check::run(rest),
+        _ => Err("usage: cargo xtask (build [--debug]|link|deps) <package> | lint-man [--gate DIR] [--coverage] | kernel-check --emit|--verify FILE".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,
