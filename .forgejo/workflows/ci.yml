@@ -1,6 +1,9 @@
 # Solstice CI (Forgejo Actions). Constraints of the runner: no `uses:`, no
 # `needs:`, no `if:`, no artifacts; steps run as `sh -lc`; sccache is injected
-# automatically when on PATH.
+# automatically when on PATH. The runner clones the repository at the pushed
+# commit before the first step and runs every step from its root, so there is
+# no checkout step. (An explicit clone from ${GITHUB_SERVER_URL} failed on
+# every run until 26 September 2026, because the runner does not set it.)
 name: ci
 
 on:
@@ -13,11 +16,10 @@ jobs:
     # Ubuntu + rustup stable: type-check and lint against the hosted illumos target.
     runs-on: rust
     steps:
-      - run: git clone --depth 1 --branch "${GITHUB_REF_NAME:-main}" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" src
-      - run: cd src && export SCCACHE_STARTUP_TIMEOUT=60 && rustup target add x86_64-unknown-illumos && cargo check --workspace --target x86_64-unknown-illumos
-      - run: cd src && cargo clippy --workspace --target x86_64-unknown-illumos -- -D warnings
-      - run: cd src && cargo fmt --all -- --check
-      - run: cd src && RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude xtask --no-deps --target x86_64-unknown-illumos
+      - run: export SCCACHE_STARTUP_TIMEOUT=60 && rustup target add x86_64-unknown-illumos && cargo check --workspace --target x86_64-unknown-illumos
+      - run: cargo clippy --workspace --target x86_64-unknown-illumos -- -D warnings
+      - run: cargo fmt --all -- --check
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude xtask --no-deps --target x86_64-unknown-illumos
 
   kmod-illumos:
     # Native illumos: install a pinned nightly (the only nightly-only step is
@@ -25,20 +27,19 @@ jobs:
     # them with the illumos ld as real kernel modules and check them.
     runs-on: illumos
     steps:
-      - run: git clone --depth 1 --branch "${GITHUB_REF_NAME:-main}" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" src
       - run: >
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           --default-toolchain nightly-2026-04-16 --component rust-src --no-modify-path
       - run: >
-          cd src && export PATH="$HOME/.cargo/bin:$PATH" && export SCCACHE_STARTUP_TIMEOUT=60 &&
+          export PATH="$HOME/.cargo/bin:$PATH" && export SCCACHE_STARTUP_TIMEOUT=60 &&
           cargo +nightly-2026-04-16 build -p rnull -p rselftest --release
           --target targets/x86_64-illumos-kmod.json
           -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
       - run: >
-          cd src && ld -ztype=kmod -z allextract
+          ld -ztype=kmod -z allextract
           target/x86_64-illumos-kmod/release/rnull.a -o target/rnull &&
           elfdump -d target/rnull && nm -u target/rnull
       - run: >
-          cd src && ld -ztype=kmod -z allextract
+          ld -ztype=kmod -z allextract
           target/x86_64-illumos-kmod/release/rselftest.a -o target/rselftest &&
           elfdump -d target/rselftest | grep SUNW_KMOD
