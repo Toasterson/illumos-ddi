@@ -269,9 +269,20 @@ pub enum DmaError {
 
 impl DmaError {
     /// Interprets a return code in the `DDI_DMA_*` convention of
-    /// `ddi_dma_alloc_handle(9F)` and `ddi_dma_addr_bind_handle(9F)`, where
-    /// `DDI_SUCCESS` and `DDI_DMA_MAPPED` are both zero.
-    fn check(raw: i32) -> Result<(), DmaError> {
+    /// `ddi_dma_alloc_handle(9F)`, `ddi_dma_addr_bind_handle(9F)`,
+    /// `ddi_dma_buf_bind_handle(9F)` and the other functions that report
+    /// `DDI_DMA_*` codes, where `DDI_SUCCESS` and `DDI_DMA_MAPPED` are both
+    /// zero and mean `Ok`.
+    ///
+    /// This is the decoder the safe layer uses itself. It is public for
+    /// drivers that call a DMA function through the raw bindings, so that
+    /// they decode every code the same way: `DDI_DMA_PARTIAL_MAP`,
+    /// `NORESOURCES`, `NOMAPPING`, `TOOBIG`, `TOOSMALL`, `LOCKED`,
+    /// `BADLIMITS`, `STALE`, `BADATTR` and `INUSE` each become their variant,
+    /// and any other code becomes [`DmaError::Other`]. A partial mapping is
+    /// an error here, as everywhere in this module; a caller that asked for
+    /// `DDI_DMA_PARTIAL` must check for `DDI_DMA_PARTIAL_MAP` first.
+    pub fn check(raw: i32) -> Result<(), DmaError> {
         Err(match raw {
             sys::DDI_DMA_MAPPED => return Ok(()),
             sys::DDI_DMA_PARTIAL_MAP => DmaError::PartialMap,
@@ -1286,6 +1297,27 @@ impl FusedIterator for DmaCookies<'_> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_decodes_every_dma_code() {
+        assert_eq!(DmaError::check(sys::DDI_DMA_MAPPED), Ok(()));
+        assert_eq!(DmaError::check(sys::DDI_SUCCESS), Ok(()));
+        for (code, e) in [
+            (sys::DDI_DMA_PARTIAL_MAP, DmaError::PartialMap),
+            (sys::DDI_DMA_NORESOURCES, DmaError::NoResources),
+            (sys::DDI_DMA_NOMAPPING, DmaError::NoMapping),
+            (sys::DDI_DMA_TOOBIG, DmaError::TooBig),
+            (sys::DDI_DMA_TOOSMALL, DmaError::TooSmall),
+            (sys::DDI_DMA_LOCKED, DmaError::Locked),
+            (sys::DDI_DMA_BADLIMITS, DmaError::BadLimits),
+            (sys::DDI_DMA_STALE, DmaError::Stale),
+            (sys::DDI_DMA_BADATTR, DmaError::BadAttr),
+            (sys::DDI_DMA_INUSE, DmaError::InUse),
+        ] {
+            assert_eq!(DmaError::check(code), Err(e), "code {code}");
+        }
+        assert_eq!(DmaError::check(12345), Err(DmaError::Other(12345)));
+    }
 
     #[test]
     fn not_own_node_maps_to_enxio() {
