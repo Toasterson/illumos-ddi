@@ -362,7 +362,7 @@ impl ddi::Driver for RNull {
     type Instance = RNullInstance;   // per-instance state, Send + Sync
     const LINKINFO: &'static CStr = c"Rust null pseudo device v1";
 
-    fn attach(dev: DevInfo, ctx: &Sleepable) -> Result<Self::Instance, DdiError>;
+    fn attach(node: OwnNode, ctx: &Sleepable) -> Result<Self::Instance, DdiError>;
     fn detach(inst: Self::Instance, dev: DevInfo, ctx: &Sleepable)
         -> Result<(), (Self::Instance, DdiError)>;
     // resume, suspend and quiesce have defaults; instance_of_minor defaults to identity
@@ -496,7 +496,22 @@ lock to release it.
 `DevInfo` has no public constructor. The framework creates it in the glue
 for `attach`, `detach` and `getinfo` and passes it to the driver. It is
 `Copy`, and it may be stored in the instance, because the instance is
-destroyed at detach and therefore cannot outlive the node.
+destroyed at detach and therefore cannot outlive the node. A `DevInfo` is
+for queries: properties, names, the instance number and logging.
+
+Resources that the kernel ties to the requesting device need the driver's
+own node, and the manual pages say so: `ddi_dma_alloc_handle(9F)` takes
+"the device's dev_info structure" and adds that "a DMA handle must only be
+used by the device for which it was allocated". Those constructors take an
+`OwnNode` instead: `DmaHandle::new` and `try_new`, `Interrupts::alloc` and
+`try_alloc`, `RegMap::map`, `RegBlock::map` and `PciConfig::setup`. Only
+the glue creates an `OwnNode`, in `attach(9E)` with `DDI_ATTACH`, from the
+node the kernel passed, and hands it to `Driver::attach` by value. The
+driver keeps it in its instance if it allocates such resources later. It
+is neither `Copy` nor `Clone`, so one instance cannot lend its node to
+another, and it dereferences to its `DevInfo` for queries. A node from
+anywhere else needs the `unsafe` `OwnNode::from_raw`. Section 5.12 gives
+the reason and the runtime guard behind it.
 
 `MinorNode` is an RAII type. Creating one calls `ddi_create_minor_node`;
 dropping it calls `ddi_remove_minor_node`. Its constructor takes
@@ -640,7 +655,44 @@ manipulation, the typed LDI ioctls (the target decides how many bytes it
 copies under `FKIOCTL`, so the caller must promise that the command matches
 the type) and everything in the private tier remain `unsafe fn` with
 documented preconditions. The safe crate should never claim more than the
-manual page guarantees.
+manual page guarantees. `OwnNode::from_raw` is `unsafe` for a reason of
+this kind: nothing but the attach glue can know that a node is the
+driver's own.
+
+### 5.12 Panics become types
+
+A kernel panic that is traced to misuse of a DDI interface, where the
+driver did something its manual page forbids, is a gap in this crate as
+much as a bug in the driver, because the safe layer exists so that such
+rules cannot be broken without `unsafe`. Every such panic therefore leads
+to four changes to the safe layer, made together:
+
+1. A type or capability that makes the misuse unrepresentable in safe
+   code.
+2. A runtime guard wherever the type can be bypassed with `unsafe`, which
+   turns the misuse into an error before the kernel is called.
+3. Regression tests: a `compile_fail` doctest for the type rule, with the
+   expected error code and a compiling twin that differs only in the rule,
+   and an in-kernel `rselftest` check for the guard. The check must not be
+   able to panic even if the guard were missing.
+4. A row in the table below that names the panic and its evidence.
+
+Stable rustdoc does not check the error code of a `compile_fail` doctest;
+the pinned nightly does, so the doctests are also run with it
+(`cargo +nightly-2026-04-16 test -p ddi --no-default-features --doc`).
+
+Some rules resist types. The instance type is `'static`, so the compiler
+cannot tie an `OwnNode` to the interval between attach and detach; it can
+only make the node unique and impossible to construct without `unsafe`.
+Leaking it past detach (a forgotten `Timeout` that captured it, a
+`KBox::into_raw`) remains possible in safe Rust, as leaking always is, and
+no guard can see it, because the node of a detached instance may be freed.
+
+Panics prevented:
+
+| Date | Symptom | Root cause | Type rule | Guard | Tests | Evidence |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-28 | `BAD TRAP: type=e (#pf Page fault)`, NULL pointer dereference at `pc=0` in `ddi_dma_addr_bind_handle`, at the first bind (illumos `cda5b9a49f`) | A pseudo driver allocated its DMA handles against `ddi_root_node(9F)`, not its own node. Rootnex accepts the root as its own requester, and the bind then calls the root node's `devi_bus_dma_bindfunc`, which is never filled because the root has no parent. | `DmaHandle::new` and `try_new` take `&OwnNode`, which only the attach glue creates and which is neither `Copy` nor `Clone`; a foreign node needs `unsafe` `OwnNode::from_raw`. `Interrupts::alloc`, `RegMap::map`, `RegBlock::map` and `PciConfig::setup`, which dereference the root node's missing parent, follow the same rule. | Before `ddi_dma_alloc_handle`, `DmaError::NotOwnNode` (`ENXIO`) for a node without a parent or bound to another driver than the one attached; the other constructors refuse the same nodes. | `compile_fail` doctests on `OwnNode` (a `DevInfo` for DMA, E0308; copy, E0507; clone, E0277; `from_raw` without `unsafe`, E0133); `rselftest` checks "dma root node refused by guard", "dma other driver's node refused by guard", "dma own pseudo node is BadAttr" | Workspace note `notes/illumos-drm-dma-panic-20260928.md`; illumos-drm pull request 3 |
 
 ## 6. Build and link model
 
@@ -809,12 +861,13 @@ outside the kernel.
 exercised with `dd`, a small ioctl test program and `rem_drv`.
 
 `rselftest` is a pseudo driver that tests the safe layer from inside the
-kernel. When it attaches it runs 35 checks over properties from its `.conf`
+kernel. When it attaches it runs 38 checks over properties from its `.conf`
 file and published by itself, mutexes, reader-writer locks with upgrade and
 downgrade, semaphores, condition variable timeouts, ticks, `delay`, busy
 waiting, `lbolt`, one-shot timeouts and their cancellation, task queues
-with blocking and non-blocking dispatch, and name-value lists including
-packing in both encodings. It logs each result with `dev_err(9F)`, counts
+with blocking and non-blocking dispatch, name-value lists including
+packing in both encodings, and the own-node rule of section 5.12 for DMA
+handles. It logs each result with `dev_err(9F)`, counts
 them in a kstat and reports them through an ioctl. A second ioctl runs 7
 layered-device checks, which the manual forbids in `attach`: it opens its
 own node through LDI and reads a byte pattern through a kernel-space `uio`,
@@ -832,9 +885,26 @@ caller at all, because its read routine uses `uzero` regardless of the
 segment, which is why the LDI test reads from the driver itself. The logs
 are in the workspace under `logs/oibldofgate/20260926-rselftest-*`.
 
-Register access, PCI configuration space, interrupts and DMA need a device
-to bind to and are not covered by `rselftest`. They were checked against
-the gate source and the compiler only. Tests can also register with
+The three DMA checks only allocate and never bind. The driver's own
+pseudo node reaches the kernel and gets `DmaError::BadAttr`, because the
+pseudo nexus refuses DMA handles. An `OwnNode` made with the `unsafe`
+`OwnNode::from_raw` for `ddi_root_node(9F)`, and one for the pseudo nexus
+node, which has a parent but another driver's major number, must both get
+`DmaError::NotOwnNode` from the guard. A handle allocated against
+expectation is freed at once and reported as a failure; freeing a
+root-node handle works, only binding it panics.
+
+On 28 September 2026 all 45 checks (38 at attach and 7 LDI checks) passed
+on a disposable guest on Hephaistos with the same kernel as `oibldofgate`
+(illumos `cda5b9a49f`). As a negative control, a build with the guard
+patched out reported the two guard checks as failed and did not panic.
+The logs are in the workspace under
+`logs/hephaistos/illumos-drm/20260928-ddi-own-node-*`.
+
+Apart from that DMA check, register access, PCI configuration space,
+interrupts and DMA need a device to bind to and are not covered by
+`rselftest`. They were checked against the gate source and the compiler
+only. Tests can also register with
 `ktest(9F)`, whose bindings now exist in `ddi-ktest-sys`.
 
 ### 8.5 Test infrastructure

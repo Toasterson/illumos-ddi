@@ -49,7 +49,7 @@ use core::marker::PhantomData;
 use core::mem::size_of;
 
 use crate::context::Sleepable;
-use crate::device::DevInfo;
+use crate::device::{DevInfo, OwnNode};
 use crate::error::DdiError;
 use crate::sys;
 
@@ -401,15 +401,23 @@ impl RegMap {
     ///
     /// The mapping is removed when the returned value is dropped. Mapping
     /// may block, which is why the [`Sleepable`] token is required.
+    ///
+    /// `node` is the driver's own attached node: `ddi_regs_map_setup(9F)`
+    /// asks the node's parent nexus to map the registers, and the root node
+    /// has none, so the kernel would dereference NULL. A node that the guard
+    /// of [`OwnNode`] refuses fails before the kernel is called.
     pub fn map(
-        dev: &DevInfo,
+        node: &OwnNode,
         rnumber: u32,
         offset: usize,
         len: usize,
         attr: &AccessAttr,
         _ctx: &Sleepable,
     ) -> Result<RegMap, DdiError> {
-        let size = dev.regsize(rnumber)?;
+        if !node.is_plausibly_own() {
+            return Err(DdiError);
+        }
+        let size = node.regsize(rnumber)?;
         if offset >= size {
             return Err(DdiError);
         }
@@ -423,7 +431,8 @@ impl RegMap {
         let raw_attr = attr.to_raw();
         let mut base: sys::caddr_t = core::ptr::null_mut();
         let mut handle: sys::ddi_acc_handle_t = core::ptr::null_mut();
-        let r = unsafe { sys::ddi_regs_map_setup(dev.as_raw(), rnumber, &mut base, off, olen, &raw_attr, &mut handle) };
+        let r =
+            unsafe { sys::ddi_regs_map_setup(node.as_raw(), rnumber, &mut base, off, olen, &raw_attr, &mut handle) };
         DdiError::check(r)?;
         Ok(RegMap { handle, base: base.cast::<u8>(), len })
     }
@@ -643,13 +652,13 @@ impl<const LEN: usize> RegBlock<LEN> {
     /// `offset`, with [`RegMap::map`], and checks the result as
     /// [`RegBlock::from_map`] does.
     pub fn map(
-        dev: &DevInfo,
+        node: &OwnNode,
         rnumber: u32,
         offset: usize,
         attr: &AccessAttr,
         ctx: &Sleepable,
     ) -> Result<RegBlock<LEN>, DdiError> {
-        let map = RegMap::map(dev, rnumber, offset, LEN, attr, ctx)?;
+        let map = RegMap::map(node, rnumber, offset, LEN, attr, ctx)?;
         RegBlock::from_map(map).map_err(|_| DdiError)
     }
 

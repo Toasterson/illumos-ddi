@@ -30,7 +30,7 @@ use core::fmt;
 use core::mem::size_of;
 
 use crate::context::Sleepable;
-use crate::device::DevInfo;
+use crate::device::{DevInfo, OwnNode};
 use crate::error::DdiError;
 use crate::regs::{RegError, RegValue};
 use crate::sys;
@@ -87,14 +87,22 @@ unsafe impl Send for PciConfig {}
 unsafe impl Sync for PciConfig {}
 
 impl PciConfig {
-    /// Obtains a configuration space handle for `dev` with
-    /// `pci_config_setup(9F)`. The manual requires user or kernel context,
-    /// hence the [`Sleepable`] token. The handle is released when the
-    /// returned value is dropped.
-    pub fn setup(dev: &DevInfo, _ctx: &Sleepable) -> Result<PciConfig, DdiError> {
+    /// Obtains a configuration space handle for the driver's own attached
+    /// node with `pci_config_setup(9F)`. The manual requires user or kernel
+    /// context, hence the [`Sleepable`] token. The handle is released when
+    /// the returned value is dropped.
+    ///
+    /// `pci_config_setup(9F)` maps register set 0 through the node's parent
+    /// nexus, and the root node has none, so the kernel would dereference
+    /// NULL. A node that the guard of [`OwnNode`] refuses fails before the
+    /// kernel is called.
+    pub fn setup(node: &OwnNode, _ctx: &Sleepable) -> Result<PciConfig, DdiError> {
+        if !node.is_plausibly_own() {
+            return Err(DdiError);
+        }
         let mut handle: sys::ddi_acc_handle_t = core::ptr::null_mut();
-        DdiError::check(unsafe { sys::pci_config_setup(dev.as_raw(), &mut handle) })?;
-        Ok(PciConfig { handle, dev: *dev })
+        DdiError::check(unsafe { sys::pci_config_setup(node.as_raw(), &mut handle) })?;
+        Ok(PciConfig { handle, dev: node.dev() })
     }
 
     /// Returns the raw access handle, for functions this crate does not wrap

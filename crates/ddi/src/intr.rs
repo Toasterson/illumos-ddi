@@ -63,9 +63,11 @@
 //!     }
 //! }
 //!
-//! let types = dev.intr_types(ctx)?;
+//! // `node` is the `OwnNode` that `Driver::attach` received; the queries
+//! // reach its `DevInfo` through `Deref`.
+//! let types = node.intr_types(ctx)?;
 //! let kind = types.best().ok_or(DdiError)?;
-//! let intrs = Interrupts::alloc(&dev, kind, 1, false, |pri, _n| Hw {
+//! let intrs = Interrupts::alloc(&node, kind, 1, false, |pri, _n| Hw {
 //!     regs,
 //!     stats: Mutex::with_priority(Stats::default(), pri),
 //! }, ctx)?;
@@ -100,7 +102,7 @@ use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 
 use crate::context::{Atomic, Sleepable};
-use crate::device::DevInfo;
+use crate::device::{DevInfo, OwnNode};
 use crate::error::DdiError;
 use crate::kmem::KBox;
 use crate::sys;
@@ -541,8 +543,15 @@ impl<T: InterruptHandler> Interrupts<T> {
     /// called with the priority and the number of vectors actually
     /// allocated, and its result becomes the handler state. Locks in the
     /// state that the handler takes must be created with that priority.
+    ///
+    /// The interrupts are allocated for `node`, the driver's own attached
+    /// node, as `ddi_intr_alloc(9F)` requires. The request goes to the
+    /// node's parent nexus, and the root node has none, so the kernel would
+    /// dereference NULL; a node that the guard of [`OwnNode`] refuses (the
+    /// root node, or a node bound to another driver) fails with
+    /// [`IntrError::Invalid`] before the kernel is called.
     pub fn alloc<F>(
-        dev: &DevInfo,
+        node: &OwnNode,
         kind: IntrKind,
         count: usize,
         strict: bool,
@@ -552,7 +561,7 @@ impl<T: InterruptHandler> Interrupts<T> {
     where
         F: FnOnce(IntrPriority, usize) -> T,
     {
-        Self::try_alloc(dev, kind, count, strict, |pri, n| Ok(init(pri, n)), ctx)
+        Self::try_alloc(node, kind, count, strict, |pri, n| Ok(init(pri, n)), ctx)
     }
 
     /// Does what [`Interrupts::alloc`] does, with a state constructor that
@@ -560,7 +569,7 @@ impl<T: InterruptHandler> Interrupts<T> {
     /// error is returned. This is the variant to use when building the state
     /// involves other fallible setup, such as creating a [`SoftInterrupt`].
     pub fn try_alloc<E, F>(
-        dev: &DevInfo,
+        node: &OwnNode,
         kind: IntrKind,
         count: usize,
         strict: bool,
@@ -575,11 +584,14 @@ impl<T: InterruptHandler> Interrupts<T> {
             Ok(n) if n > 0 => n,
             _ => return Err(IntrError::Invalid.into()),
         };
+        if !node.is_plausibly_own() {
+            return Err(IntrError::Invalid.into());
+        }
         let mut handles = Handles::new(count);
         let behavior = if strict { sys::DDI_INTR_ALLOC_STRICT } else { sys::DDI_INTR_ALLOC_NORMAL };
         let mut actual: sys::c_int = 0;
         IntrError::check(unsafe {
-            sys::ddi_intr_alloc(dev.as_raw(), handles.array.as_ptr(), kind.raw(), 0, want, &mut actual, behavior)
+            sys::ddi_intr_alloc(node.as_raw(), handles.array.as_ptr(), kind.raw(), 0, want, &mut actual, behavior)
         })?;
         // The kernel stores at most `count` handles; clamp anyway so that a
         // misbehaving nexus cannot make teardown read past the array.
