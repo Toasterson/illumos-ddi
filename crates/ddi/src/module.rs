@@ -98,6 +98,34 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
     ) -> Result<(), Errno> {
         Ok(())
     }
+    /// Handles `open(9E)` for a driver that uses clone opens.
+    ///
+    /// A character device normally sees one `open(9E)` per open(2) but only
+    /// one `close(9E)`, on the last close of the device number, so it cannot
+    /// keep state per open file. A clone open fixes that: the driver picks a
+    /// fresh minor number for the new file and returns it here, the glue
+    /// stores `makedevice(getmajor(dev), minor)` through the `devp` argument
+    /// of `open(9E)`, and the kernel uses that device number for every later
+    /// entry point of the file. The file therefore gets its own
+    /// [`close`](CharDevice::close), called when its last reference goes
+    /// away.
+    ///
+    /// Returning `Ok(None)` keeps the device number that was opened, which is
+    /// what the default does after calling [`open`](CharDevice::open). A
+    /// returned minor must map to the same instance through
+    /// [`Driver::instance_of_minor`]. If it does not, the glue calls
+    /// [`close`](CharDevice::close) with the returned minor, so that the
+    /// driver can release what it set up, and fails the open with `ENXIO`.
+    fn clone_open(
+        &self,
+        minor: Minor,
+        flags: OpenFlags,
+        otyp: OpenType,
+        cred: &Cred<'_>,
+        ctx: &Sleepable,
+    ) -> Result<Option<Minor>, Errno> {
+        self.open(minor, flags, otyp, cred, ctx).map(|()| None)
+    }
     /// Handles `close(9E)`.
     fn close(
         &self,
@@ -385,10 +413,25 @@ pub mod glue {
     where
         D::Instance: CharDevice,
     {
-        let Some((minor, inst)) = (unsafe { D::state().instance_for_dev(*devp) }) else { return sys::errno::ENXIO };
+        let dev = unsafe { *devp };
+        let Some((minor, inst)) = (unsafe { D::state().instance_for_dev(dev) }) else { return sys::errno::ENXIO };
         let cred = unsafe { Cred::from_raw(credp) };
         let ctx = unsafe { Sleepable::assume() };
-        Errno::into_c(inst.open(minor, OpenFlags(flag), OpenType::from_raw(otyp), &cred, &ctx))
+        let (flags, otyp) = (OpenFlags(flag), OpenType::from_raw(otyp));
+        match inst.clone_open(minor, flags, otyp, &cred, &ctx) {
+            Ok(None) => 0,
+            Ok(Some(clone)) => {
+                if D::instance_of_minor(clone) != D::instance_of_minor(minor) {
+                    // The driver's open state is keyed by the clone minor, so
+                    // let it undo that before the open fails.
+                    let _ = inst.close(clone, flags, otyp, &cred, &ctx);
+                    return sys::errno::ENXIO;
+                }
+                unsafe { *devp = sys::makedevice(sys::getmajor(dev), clone.0) };
+                0
+            }
+            Err(e) => e.get(),
+        }
     }
 
     /// The `close(9E)` entry point for a [`CharDevice`].
