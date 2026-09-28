@@ -623,7 +623,12 @@ a type parameter of the view. `DevInfo::props()` gives a
 `Props<'_, ReadWrite>` that also has the `set_*`, `remove`, `remove_all`
 and `undefine` methods. A view from an `OwnNode` that the guard of
 section 5.12 refuses fails every update with `PropError::NotOwnNode`
-before the kernel is called.
+before the kernel is called. Some gate drivers write properties of other
+nodes: nexus drivers on their children (`io/lofi.c`, `io/fcoe/fcoe_fc.c`,
+`pciex/npe_misc.c`, `mpt_sas`) and a few leaf drivers on their parent
+(`sil3xxx.c`, `dnet.c`). That is out of scope for now; such a driver has to
+use the raw `ddi::sys` functions until a capability for child nodes
+exists.
 
 ### 5.9 Callbacks own their state
 
@@ -735,7 +740,7 @@ made against the gate source of illumos `cda5b9a49f`:
 | Interface | Decision | Reason in the gate | Guard |
 | --- | --- | --- | --- |
 | `ddi_create_minor_node(9F)`: `OwnNode::create_minor_node` | `&OwnNode` | The minor's device number takes the major of the driver bound to the node, `detach_node` (`os/devcfg.c`) removes the node's minor nodes when that driver detaches, and on a DEBUG kernel an unbound node trips `ASSERT(major != DDI_MAJOR_T_NONE)` (`os/sunddi.c`). | `DdiError` |
-| `ddi_prop_update_*(9F)`, `ddi_prop_remove(9F)`, `ddi_prop_remove_all(9F)`, `ddi_prop_undefine(9F)`: `OwnNode::props` | `Props<'_, ReadWrite>` from `&OwnNode`; lookups stay on `DevInfo` | They change the node's driver property list (`ddi_prop_add`, `ddi_prop_remove_common`), which `detach_node` deletes when the node's driver detaches and which other code reads (`pm-components` in `os/sunpm.c`); `remove_all` on a foreign node deletes another driver's properties. | `PropError::NotOwnNode` |
+| `ddi_prop_update_*(9F)`, `ddi_prop_remove(9F)`, `ddi_prop_remove_all(9F)`, `ddi_prop_undefine(9F)`: `OwnNode::props` | `Props<'_, ReadWrite>` from `&OwnNode`; lookups stay on `DevInfo` | They change the node's driver property list (`ddi_prop_add`, `ddi_prop_remove_common`), which `detach_node` deletes when the node's driver detaches and which other code reads (`pm-components` in `os/sunpm.c`); `remove_all` on a foreign node deletes another driver's properties. Writes to a child or parent node, which gate drivers do (`ddi_prop_update_int` on a child in `io/lofi.c`, `io/fcoe/fcoe_fc.c`, `pciex/npe_misc.c` and `mpt_sas`; on the parent in `dktp/controller/ata/sil3xxx.c` and `io/dnet/dnet.c`), are out of scope: until a capability for child nodes exists they are possible only through raw `ddi::sys` calls. | `PropError::NotOwnNode` |
 | `ldi_ident_from_dip(9F)`: `LdiIdent::from_dip` | `&OwnNode` | `ident_alloc` (`os/driver_lyr.c`) stores the node without a hold and `ldi_usage_walker_helper` later calls `e_ddi_hold_devi` on it. | `ENXIO` |
 | `devmap_devmem_setup(9F)`, `devmap_devmem_remap(9F)` | Not wrapped; `DevmapHandle` documents that the node must be the driver's own, and a future wrapper takes `&OwnNode` | They call `ddi_map(dip)`, which asks the parent nexus, as `RegMap::map` does (`vm/seg_dev.c`). | For the wrapper |
 | `devmap_umem_setup(9F)`, `devmap_umem_remap(9F)` | Not wrapped; the node passed should be the own node, but nothing is enforced | They never read the node (`vm/seg_dev.c`). | None needed |

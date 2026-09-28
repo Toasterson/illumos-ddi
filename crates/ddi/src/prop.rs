@@ -31,6 +31,11 @@
 //! guard applies too: a view from an [`OwnNode`] made for a foreign node
 //! with the `unsafe` [`OwnNode::from_raw`] refuses every update with
 //! [`PropError::NotOwnNode`] before the kernel is called.
+//!
+//! Writing properties of another node, as some nexus drivers do for their
+//! children and a few leaf drivers for their parent, is out of scope: it
+//! needs the raw `ddi::sys` functions until a capability for child nodes
+//! exists.
 
 use core::ffi::CStr;
 use core::fmt;

@@ -159,9 +159,9 @@ const DDI_MAJOR_T_NONE: sys::major_t = sys::major_t::MAX;
 /// properties and LDI identifiers belong to the node and its driver in
 /// another way: the kernel removes the minor nodes and driver properties of
 /// a node when that node's driver detaches, and an LDI identifier records
-/// the node without holding it. Passing another node is outside the DDI. On 28 September 2026 a driver that allocated its DMA
-/// handles against `ddi_root_node(9F)` panicked the system at the first
-/// bind, through a function pointer the root node never has
+/// the node without holding it. Passing another node is outside the DDI.
+/// On 28 September 2026 a driver that allocated its DMA handles against
+/// `ddi_root_node(9F)` panicked the system at the first bind, through a function pointer the root node never has
 /// (`notes/illumos-drm-dma-panic-20260928.md` in the workspace; the
 /// "Panics prevented" table in `docs/DESIGN.md`).
 ///
