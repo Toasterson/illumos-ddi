@@ -19,7 +19,9 @@
 //! runtime guard refuses the root node and the pseudo nexus node with
 //! `DmaError::NotOwnNode` before the kernel is asked. Those checks only
 //! allocate; nothing is ever bound, so even a missing guard cannot panic
-//! the system.
+//! the system. The same guard is checked for minor nodes, property updates
+//! and LDI identifiers against the root node; were it missing, each of those
+//! would create something harmless on the root node and remove it again.
 #![no_std]
 
 use core::ffi::CStr;
@@ -89,8 +91,8 @@ pub struct RSelfTest;
 
 /// The state of the attached instance.
 pub struct Instance {
-    dev: DevInfo,
-    _node: MinorNode,
+    node: OwnNode,
+    _minor: MinorNode,
     stats: TypedKstat<SelfTestStats>,
     _periodic: Periodic<fn(&Sleepable)>,
     results: Results,
@@ -133,9 +135,10 @@ fn cstr_eq(a: &CStr, b: &CStr) -> bool {
     a.to_bytes() == b.to_bytes()
 }
 
-fn test_props(r: &mut Report, ctx: &Sleepable) {
-    let dev = r.dev;
-    let p = dev.props();
+fn test_props(r: &mut Report, node: &OwnNode, ctx: &Sleepable) {
+    // The view from the own node looks up and updates; the view from a
+    // DevInfo (`node.dev().props()`) would only look up.
+    let p = node.props();
     r.check("prop int from conf", p.int(c"answer", ctx) == Ok(Some(42)));
     r.check("prop int_or default", p.int_or(c"no-such-property", 7, ctx) == 7);
     r.check("prop missing is None", matches!(p.string(c"no-such-property", ctx), Ok(None)));
@@ -169,7 +172,8 @@ fn test_props(r: &mut Report, ctx: &Sleepable) {
             && matches!(p.int_array(c"rselftest-ints", ctx), Ok(Some(a)) if *a == [1, 2, 3]),
     );
     r.check("prop wrong type", matches!(p.int64(c"greeting", ctx), Ok(None) | Err(_)));
-    r.check("prop remove", p.remove(c"rselftest-int", ctx) && !p.exists(c"rselftest-int", ctx));
+    r.check("prop remove", p.remove(c"rselftest-int", ctx) == Ok(true) && !p.exists(c"rselftest-int", ctx));
+    r.check("prop remove missing", p.remove(c"rselftest-int", ctx) == Ok(false));
 }
 
 fn test_sync(r: &mut Report, ctx: &Sleepable) {
@@ -263,15 +267,16 @@ impl Driver for RSelfTest {
         let dev = own.dev();
         let inst = dev.instance();
         let minor = Minor(u32::try_from(inst.0).map_err(|_| DdiError)?);
-        let node = dev.create_minor_node(c"rselftest", MinorKind::Char, minor, NodeType::Pseudo)?;
+        let minor_node = own.create_minor_node(c"rselftest", MinorKind::Char, minor, NodeType::Pseudo)?;
 
         let mut r = Report { dev, results: Results::default(), index: 0 };
-        test_props(&mut r, ctx);
+        test_props(&mut r, &own, ctx);
         test_sync(&mut r, ctx);
         test_time(&mut r, ctx);
         test_taskq(&mut r, ctx);
         test_nvlist(&mut r, ctx);
         test_dma(&mut r, &own, ctx);
+        test_own_node_guards(&mut r, ctx);
 
         let stats = TypedKstat::<SelfTestStats>::new(
             KstatId { module: c"rselftest", instance: inst, name: c"selftest", class: c"misc" },
@@ -286,11 +291,13 @@ impl Driver for RSelfTest {
 
         dev.note(format_args!("self-test finished: {} passed, {} failed", r.results.passed, r.results.failed));
         dev.report();
-        Ok(Instance { dev, _node: node, stats, _periodic: periodic, results: r.results })
+        Ok(Instance { node: own, _minor: minor_node, stats, _periodic: periodic, results: r.results })
     }
 
     fn detach(inst: Instance, dev: DevInfo, ctx: &Sleepable) -> Result<(), (Instance, DdiError)> {
-        dev.props().remove_all(ctx);
+        if let Err(e) = inst.node.props().remove_all(ctx) {
+            dev.warn(format_args!("removing the published properties: {e}"));
+        }
         drop(inst);
         Ok(())
     }
@@ -397,6 +404,40 @@ fn test_dma(r: &mut Report, node: &OwnNode, ctx: &Sleepable) {
     r.check("dma other driver's node refused by guard", refused);
 }
 
+/// Checks that the own-node guard also covers minor nodes, property updates
+/// and LDI identifiers, with an `OwnNode` made for `ddi_root_node(9F)`.
+///
+/// None of these can panic even without the guard. The kernel would create
+/// a minor node on the root node (with a node type no `devfsadm` rule
+/// knows), which the drop of the `MinorNode` removes again; add a driver
+/// property to the root node, which the check removes again; and make an
+/// LDI identifier for the root node's driver, which the drop releases.
+/// `remove_all` is not tried, because without the guard it would delete the
+/// root node's driver properties.
+fn test_own_node_guards(r: &mut Report, ctx: &Sleepable) {
+    // SAFETY: test-only use of the bypass, as `OwnNode::from_raw`
+    // documents. The root node stays in the device tree for ever.
+    let root = unsafe { OwnNode::from_raw(ddi::sys::ddi_root_node()) };
+
+    let minor =
+        root.create_minor_node(c"rselftest-guard", MinorKind::Char, Minor(0), NodeType::Custom(c"ddi_rselftest_guard"));
+    r.check("minor node on root node refused by guard", minor.is_err());
+    drop(minor);
+
+    let p = root.props();
+    let set = p.set_int(c"rselftest-guard", 1, ctx);
+    // Without the guard the update succeeds and this removes it again.
+    let removed = p.remove(c"rselftest-guard", ctx);
+    r.check(
+        "prop update on root node refused by guard",
+        set == Err(PropError::NotOwnNode) && removed == Err(PropError::NotOwnNode),
+    );
+
+    let ident = LdiIdent::from_dip(&root, ctx);
+    r.check("ldi ident for root node refused by guard", matches!(ident, Err(e) if e == Errno::ENXIO));
+    drop(ident);
+}
+
 /// The byte the device returns at offset `off`.
 fn pattern(off: u64) -> u8 {
     (off % 251) as u8
@@ -404,7 +445,7 @@ fn pattern(off: u64) -> u8 {
 
 /// Runs the layered driver tests. The manual forbids LDI opens in
 /// `attach(9E)`, so these run from the ioctl path instead.
-fn ldi_tests(dev: DevInfo, cred: &Cred<'_>, ctx: &Sleepable) -> LdiResults {
+fn ldi_tests(node: &OwnNode, cred: &Cred<'_>, ctx: &Sleepable) -> LdiResults {
     let mut res = LdiResults::default();
     let mut check = |ok: bool| {
         if ok {
@@ -414,7 +455,7 @@ fn ldi_tests(dev: DevInfo, cred: &Cred<'_>, ctx: &Sleepable) -> LdiResults {
             res.failed += 1;
         }
     };
-    let Ok(ident) = LdiIdent::from_dip(&dev, ctx) else {
+    let Ok(ident) = LdiIdent::from_dip(node, ctx) else {
         check(false);
         return res;
     };
@@ -482,8 +523,8 @@ impl CharDevice for Instance {
                 Ok(0)
             }
             RSELFTEST_IOC_LDI => {
-                let res = ldi_tests(self.dev, cred, ctx);
-                self.dev.note(format_args!("LDI tests: {} passed, {} failed", res.passed, res.failed));
+                let res = ldi_tests(&self.node, cred, ctx);
+                self.node.note(format_args!("LDI tests: {} passed, {} failed", res.passed, res.failed));
                 arg.copy_out(&res)?;
                 Ok(0)
             }

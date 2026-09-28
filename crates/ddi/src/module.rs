@@ -217,6 +217,17 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
 /// `devmap_devmem_setup(9F)` together with its `devmap_callback_ctl(9S)`;
 /// the callbacks registered there receive the same handle again, as a raw
 /// `devmap_cookie_t`, for as long as the mapping exists.
+///
+/// Both setup functions take a device node, and it must be the driver's
+/// own: pass `as_raw()` of the [`OwnNode`] the instance keeps. For
+/// `devmap_devmem_setup(9F)` and `devmap_devmem_remap(9F)` this is required
+/// for the same reason as for [`RegMap`](crate::RegMap): they map the
+/// register set through `ddi_map`, which asks the node's parent nexus and
+/// dereferences the missing parent of the root node. `devmap_umem_setup(9F)`
+/// and `devmap_umem_remap(9F)` do not use the node at all in illumos
+/// `cda5b9a49f` (`vm/seg_dev.c`), but the manual gives no other meaning to
+/// it. The setup functions are not wrapped yet; a safe wrapper will take
+/// `&OwnNode` and apply its guard, as `docs/DESIGN.md` section 5.12 records.
 pub struct DevmapHandle<'a> {
     raw: sys::devmap_cookie_t,
     _call: core::marker::PhantomData<&'a ()>,

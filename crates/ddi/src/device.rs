@@ -81,10 +81,11 @@ impl OpenType {
 /// it refers to, which is why the type is `Copy` and may be kept.
 ///
 /// A `DevInfo` answers questions about the node (its properties, name and
-/// instance number) and logs on its behalf. It cannot allocate resources
+/// instance number) and logs on its behalf. It cannot create resources
 /// that the kernel ties to the requesting device, such as DMA handles,
-/// interrupts or register mappings; those take the driver's [`OwnNode`],
-/// because a `DevInfo` is `Copy` and names no owner.
+/// interrupts, register mappings, minor nodes, driver properties or LDI
+/// identifiers; those take the driver's [`OwnNode`], because a `DevInfo` is
+/// `Copy` and names no owner.
 #[derive(Clone, Copy)]
 pub struct DevInfo {
     raw: NonNull<sys::dev_info>,
@@ -126,29 +127,6 @@ impl DevInfo {
         unsafe { sys::ddi_report_dev(self.as_raw()) }
     }
 
-    /// Creates a minor node with `ddi_create_minor_node(9F)`. The node is
-    /// removed again when the returned [`MinorNode`] is dropped, so a driver
-    /// keeps it in its instance state for as long as the node should exist.
-    pub fn create_minor_node(
-        &self,
-        name: &'static CStr,
-        kind: MinorKind,
-        minor: Minor,
-        node_type: NodeType,
-    ) -> Result<MinorNode, DdiError> {
-        let r = unsafe {
-            sys::ddi_create_minor_node(
-                self.as_raw(),
-                name.as_ptr(),
-                kind.spec_type(),
-                minor.0,
-                node_type.as_cstr().as_ptr(),
-                0,
-            )
-        };
-        DdiError::check(r).map(|()| MinorNode { dip: self.as_raw(), name })
-    }
-
     /// Logs a warning prefixed with the driver name and instance, using
     /// `dev_err(9F)` at `CE_WARN`.
     pub fn warn(&self, args: core::fmt::Arguments<'_>) {
@@ -177,8 +155,11 @@ const DDI_MAJOR_T_NONE: sys::major_t = sys::major_t::MAX;
 /// structure" and says that "a DMA handle must only be used by the device
 /// for which it was allocated". Interrupts, register mappings and PCI
 /// configuration handles follow the same rule: the kernel asks the node's
-/// parent nexus to provide them for that node. Passing another node is
-/// outside the DDI. On 28 September 2026 a driver that allocated its DMA
+/// parent nexus to provide them for that node. Minor nodes, driver
+/// properties and LDI identifiers belong to the node and its driver in
+/// another way: the kernel removes the minor nodes and driver properties of
+/// a node when that node's driver detaches, and an LDI identifier records
+/// the node without holding it. Passing another node is outside the DDI. On 28 September 2026 a driver that allocated its DMA
 /// handles against `ddi_root_node(9F)` panicked the system at the first
 /// bind, through a function pointer the root node never has
 /// (`notes/illumos-drm-dma-panic-20260928.md` in the workspace; the
@@ -197,7 +178,10 @@ const DDI_MAJOR_T_NONE: sys::major_t = sys::major_t::MAX;
 /// The type rule has a runtime guard for code that bypasses it with
 /// `unsafe`: each constructor that takes an `OwnNode` first refuses a node
 /// without a parent (the root node) and a node bound to another driver than
-/// the one this module attached, without calling the kernel.
+/// the one this module attached, without calling the kernel. The same
+/// holds for [`OwnNode::create_minor_node`], for the updates of the
+/// property view from [`OwnNode::props`] and for
+/// [`LdiIdent::from_dip`](crate::ldi::LdiIdent::from_dip).
 ///
 /// A `DevInfo` does not allocate DMA handles:
 ///
@@ -290,6 +274,61 @@ impl OwnNode {
     /// Returns the node for queries, as a `Copy` [`DevInfo`].
     pub fn dev(&self) -> DevInfo {
         self.dev
+    }
+
+    /// Creates a minor node with `ddi_create_minor_node(9F)`. The node is
+    /// removed again when the returned [`MinorNode`] is dropped, so a driver
+    /// keeps it in its instance state for as long as the node should exist.
+    ///
+    /// Minor nodes are created on the driver's own node: their device number
+    /// carries the major number of the driver bound to the node, so opens of
+    /// a minor node created on another driver's node reach that driver, and
+    /// the kernel removes it when that driver detaches (`detach_node` in
+    /// `os/devcfg.c`), after which dropping the [`MinorNode`] would touch a
+    /// node that may be gone. A node the [`OwnNode`] guard refuses fails with
+    /// [`DdiError`] before the kernel is called.
+    ///
+    /// A [`DevInfo`] cannot create minor nodes:
+    ///
+    /// ```compile_fail,E0599
+    /// use ddi::{DevInfo, Minor, MinorKind, NodeType};
+    /// fn create(dev: DevInfo) {
+    ///     let _ = dev.create_minor_node(c"x", MinorKind::Char, Minor(0), NodeType::Pseudo);
+    /// }
+    /// ```
+    ///
+    /// The driver's own node can:
+    ///
+    /// ```no_run
+    /// use ddi::{Minor, MinorKind, NodeType, OwnNode};
+    /// fn create(node: &OwnNode) {
+    ///     let _ = node.create_minor_node(c"x", MinorKind::Char, Minor(0), NodeType::Pseudo);
+    /// }
+    /// ```
+    pub fn create_minor_node(
+        &self,
+        name: &'static CStr,
+        kind: MinorKind,
+        minor: Minor,
+        node_type: NodeType,
+    ) -> Result<MinorNode, DdiError> {
+        if !self.is_plausibly_own() {
+            return Err(DdiError);
+        }
+        // SAFETY: the node is live for as long as `self` exists, the name and
+        // the node type are NUL-terminated strings the kernel copies or, for
+        // the node type, keeps (they are `'static`).
+        let r = unsafe {
+            sys::ddi_create_minor_node(
+                self.as_raw(),
+                name.as_ptr(),
+                kind.spec_type(),
+                minor.0,
+                node_type.as_cstr().as_ptr(),
+                0,
+            )
+        };
+        DdiError::check(r).map(|()| MinorNode { dip: self.as_raw(), name })
     }
 
     /// The runtime guard: reports whether the node can be this module's own

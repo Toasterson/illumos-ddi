@@ -520,7 +520,11 @@ own node, and the manual pages say so: `ddi_dma_alloc_handle(9F)` takes
 "the device's dev_info structure" and adds that "a DMA handle must only be
 used by the device for which it was allocated". Those constructors take an
 `OwnNode` instead: `DmaHandle::new` and `try_new`, `Interrupts::alloc` and
-`try_alloc`, `RegMap::map`, `RegBlock::map` and `PciConfig::setup`. Only
+`try_alloc`, `RegMap::map`, `RegBlock::map` and `PciConfig::setup`. So do
+the resources the kernel files under the node and removes when the node's
+driver detaches, or records without a hold: `OwnNode::create_minor_node`,
+the property updates of `OwnNode::props` (section 5.8) and
+`LdiIdent::from_dip` (section 5.10). Only
 the glue creates an `OwnNode`, in `attach(9E)` with `DDI_ATTACH`, from the
 node the kernel passed, and hands it to `Driver::attach` by value. The
 driver keeps it in its instance if it allocates such resources later. It
@@ -529,8 +533,9 @@ another, and it dereferences to its `DevInfo` for queries. A node from
 anywhere else needs the `unsafe` `OwnNode::from_raw`. Section 5.12 gives
 the reason and the runtime guard behind it.
 
-`MinorNode` is an RAII type. Creating one calls `ddi_create_minor_node`;
-dropping it calls `ddi_remove_minor_node`. Its constructor takes
+`MinorNode` is an RAII type. Creating one with
+`OwnNode::create_minor_node` calls `ddi_create_minor_node`; dropping it
+calls `ddi_remove_minor_node`. Its constructor takes
 `MinorKind::Char` or `MinorKind::Block` and a `NodeType` such as
 `NodeType::Pseudo` rather than the `S_IFCHR` constant and the
 `"ddi_pseudo"` string.
@@ -609,6 +614,17 @@ the value, so the driver's data need not outlive the call. Every property
 function in the manual is restricted to user and kernel context, so every
 method takes the sleepable token.
 
+Updates and removals change the driver property list of the node, which
+belongs to the driver bound to it: the kernel deletes it when that driver
+detaches (`detach_node` in `os/devcfg.c`), and the framework reads
+settings such as `pm-components` from it (`os/sunpm.c`). So the access is
+a type parameter of the view. `DevInfo::props()` gives a
+`Props<'_, ReadOnly>` that only looks up; `OwnNode::props()` gives a
+`Props<'_, ReadWrite>` that also has the `set_*`, `remove`, `remove_all`
+and `undefine` methods. A view from an `OwnNode` that the guard of
+section 5.12 refuses fails every update with `PropError::NotOwnNode`
+before the kernel is called.
+
 ### 5.9 Callbacks own their state
 
 Many DDI functions take a function pointer and a `void *` argument and call
@@ -654,6 +670,12 @@ rule that a pair must not be used after it was removed becomes a borrow
 error. A typed lookup matches on name and type together, as the kernel
 does, so a pair of another type reads as absent.
 
+`LdiIdent::from_dip` takes the driver's `OwnNode`. The identifier records
+the node without a hold, and the layered usage walker behind `prtconf`
+takes a hold on it later (`ldi_usage_walker_helper` in
+`os/driver_lyr.c`), so an identifier for another driver's node could
+outlive that node. The guard refuses foreign nodes with `ENXIO`.
+
 `LdiHandle` opens another device through the layered driver interface. It
 takes a reference on the credential it was opened with and closes with the
 same credential, as `ldi_close(9F)` asks, whether it is closed explicitly
@@ -695,7 +717,9 @@ to four changes to the safe layer, made together:
 
 Stable rustdoc does not check the error code of a `compile_fail` doctest;
 the pinned nightly does, so the doctests are also run with it
-(`cargo +nightly-2026-04-16 test -p ddi --no-default-features --doc`).
+(`cargo +nightly-2026-04-16 test -p ddi --no-default-features --doc
+--target x86_64-unknown-illumos`), locally and as a step of the
+`check-hosted` CI job.
 
 Some rules resist types. The instance type is `'static`, so the compiler
 cannot tie an `OwnNode` to the interval between attach and detach; it can
@@ -703,6 +727,19 @@ only make the node unique and impossible to construct without `unsafe`.
 Leaking it past detach (a forgotten `Timeout` that captured it, a
 `KBox::into_raw`) remains possible in safe Rust, as leaking always is, and
 no guard can see it, because the node of a detached instance may be freed.
+
+The capability also covers interfaces that did not panic but create
+something the kernel ties to the node and its driver. Each decision was
+made against the gate source of illumos `cda5b9a49f`:
+
+| Interface | Decision | Reason in the gate | Guard |
+| --- | --- | --- | --- |
+| `ddi_create_minor_node(9F)`: `OwnNode::create_minor_node` | `&OwnNode` | The minor's device number takes the major of the driver bound to the node, `detach_node` (`os/devcfg.c`) removes the node's minor nodes when that driver detaches, and on a DEBUG kernel an unbound node trips `ASSERT(major != DDI_MAJOR_T_NONE)` (`os/sunddi.c`). | `DdiError` |
+| `ddi_prop_update_*(9F)`, `ddi_prop_remove(9F)`, `ddi_prop_remove_all(9F)`, `ddi_prop_undefine(9F)`: `OwnNode::props` | `Props<'_, ReadWrite>` from `&OwnNode`; lookups stay on `DevInfo` | They change the node's driver property list (`ddi_prop_add`, `ddi_prop_remove_common`), which `detach_node` deletes when the node's driver detaches and which other code reads (`pm-components` in `os/sunpm.c`); `remove_all` on a foreign node deletes another driver's properties. | `PropError::NotOwnNode` |
+| `ldi_ident_from_dip(9F)`: `LdiIdent::from_dip` | `&OwnNode` | `ident_alloc` (`os/driver_lyr.c`) stores the node without a hold and `ldi_usage_walker_helper` later calls `e_ddi_hold_devi` on it. | `ENXIO` |
+| `devmap_devmem_setup(9F)`, `devmap_devmem_remap(9F)` | Not wrapped; `DevmapHandle` documents that the node must be the driver's own, and a future wrapper takes `&OwnNode` | They call `ddi_map(dip)`, which asks the parent nexus, as `RegMap::map` does (`vm/seg_dev.c`). | For the wrapper |
+| `devmap_umem_setup(9F)`, `devmap_umem_remap(9F)` | Not wrapped; the node passed should be the own node, but nothing is enforced | They never read the node (`vm/seg_dev.c`). | None needed |
+| `ddi_prop_lookup*(9F)`, `ddi_prop_get_int*(9F)`, `ddi_prop_exists(9F)`, `ddi_driver_name(9F)`, `ddi_get_instance(9F)`, `ddi_report_dev(9F)`, `dev_err(9F)` | Stay on `DevInfo` | Queries and logging read the node and create nothing. | None |
 
 Panics prevented:
 
@@ -877,13 +914,14 @@ outside the kernel.
 exercised with `dd`, a small ioctl test program and `rem_drv`.
 
 `rselftest` is a pseudo driver that tests the safe layer from inside the
-kernel. When it attaches it runs 38 checks over properties from its `.conf`
+kernel. When it attaches it runs 42 checks over properties from its `.conf`
 file and published by itself, mutexes, reader-writer locks with upgrade and
 downgrade, semaphores, condition variable timeouts, ticks, `delay`, busy
 waiting, `lbolt`, one-shot timeouts and their cancellation, task queues
 with blocking and non-blocking dispatch, name-value lists including
-packing in both encodings, and the own-node rule of section 5.12 for DMA
-handles. It logs each result with `dev_err(9F)`, counts
+packing in both encodings, the own-node rule of section 5.12 for DMA
+handles, and its guard for minor nodes, property updates and LDI
+identifiers. It logs each result with `dev_err(9F)`, counts
 them in a kstat and reports them through an ioctl. A second ioctl runs 7
 layered-device checks, which the manual forbids in `attach`: it opens its
 own node through LDI and reads a byte pattern through a kernel-space `uio`,

@@ -23,7 +23,9 @@
 //! created for without holding it. The identifier and every handle opened
 //! with it must therefore be dropped before that node detaches. Keeping them
 //! in the driver's instance state, or in values the instance owns, satisfies
-//! this, because the instance is destroyed at detach.
+//! this, because the instance is destroyed at detach. For the same reason
+//! the node is the driver's own [`OwnNode`], not any
+//! [`DevInfo`](crate::DevInfo).
 //!
 //! # Context
 //!
@@ -69,7 +71,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::context::Sleepable;
 use crate::cred::Cred;
-use crate::device::DevInfo;
+use crate::device::OwnNode;
 use crate::error::{DdiError, Errno};
 use crate::ioctl::IoctlCmd;
 use crate::prop::{PropBuf, PropError, PropString, PropStrings};
@@ -89,11 +91,39 @@ unsafe impl Send for LdiIdent {}
 unsafe impl Sync for LdiIdent {}
 
 impl LdiIdent {
-    /// Creates an identifier for the device node `dip`, normally the
-    /// driver's own, with `ldi_ident_from_dip(9F)`. The node must stay
-    /// attached for as long as the identifier and the handles opened with it
-    /// exist, as the [module documentation](self) explains.
-    pub fn from_dip(dip: &DevInfo, _ctx: &Sleepable) -> Result<LdiIdent, Errno> {
+    /// Creates an identifier for the driver's own node with
+    /// `ldi_ident_from_dip(9F)`. The node must stay attached for as long as
+    /// the identifier and the handles opened with it exist, as the
+    /// [module documentation](self) explains, which is why it takes the
+    /// [`OwnNode`] that the instance state keeps.
+    ///
+    /// The identifier records the node without holding it, and the layered
+    /// usage walker (`ldi_usage_walker_helper` in `os/driver_lyr.c`, behind
+    /// `prtconf`'s layered-driver view) takes a hold on that node later. An
+    /// identifier for another driver's node would outlive that node when it
+    /// detaches and is removed, and would attribute the opens to that
+    /// driver. So a [`DevInfo`](crate::DevInfo) is not accepted:
+    ///
+    /// ```compile_fail,E0308
+    /// fn ident(dev: ddi::DevInfo, ctx: &ddi::Sleepable) {
+    ///     let _ = ddi::LdiIdent::from_dip(&dev, ctx);
+    /// }
+    /// ```
+    ///
+    /// while the driver's own node is:
+    ///
+    /// ```no_run
+    /// fn ident(node: &ddi::OwnNode, ctx: &ddi::Sleepable) {
+    ///     let _ = ddi::LdiIdent::from_dip(node, ctx);
+    /// }
+    /// ```
+    ///
+    /// A node that the guard of [`OwnNode`] refuses fails with `ENXIO`
+    /// before the kernel is called.
+    pub fn from_dip(dip: &OwnNode, _ctx: &Sleepable) -> Result<LdiIdent, Errno> {
+        if !dip.is_plausibly_own() {
+            return Err(Errno::ENXIO);
+        }
         let mut raw: sys::ldi_ident_t = ptr::null_mut();
         Errno::check(unsafe { sys::ldi_ident_from_dip(dip.as_raw(), &mut raw) })?;
         NonNull::new(raw).map(|raw| LdiIdent { raw }).ok_or(Errno::EINVAL)

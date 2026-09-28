@@ -12,9 +12,9 @@
 //!
 //! The driver's own attached node is an [`OwnNode`], which only the
 //! [`module!`] glue creates and which is neither `Copy` nor `Clone`. DMA
-//! handles, interrupts, register mappings and PCI configuration handles
-//! are allocated from it, so safe code cannot allocate them for another
-//! node. [`DevInfo`] stays for queries.
+//! handles, interrupts, register mappings, PCI configuration handles,
+//! minor nodes, property updates and LDI identifiers need it, so safe code
+//! cannot create them for another node. [`DevInfo`] stays for queries.
 //!
 //! Some kernel functions may block and some contexts may not. A [`Sleepable`]
 //! token is proof that blocking is allowed. The framework hands one to every
@@ -26,7 +26,8 @@
 //! A [`MinorNode`] calls `ddi_create_minor_node(9F)` when created and
 //! `ddi_remove_minor_node(9F)` when dropped.
 //!
-//! [`Props`] reads and writes device properties. Its lookups return
+//! [`Props`] reads device properties and, from the driver's own node,
+//! writes them. Its lookups return
 //! `Ok(None)` for a missing property and hand back kernel-allocated values
 //! that free themselves, and every call demands the sleepable token because
 //! the manual restricts the property functions to user and kernel context.

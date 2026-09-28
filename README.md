@@ -28,7 +28,9 @@ safe layer, with a runtime guard, regression tests and an entry in the
 "Panics prevented" table of `docs/DESIGN.md` section 5.12. The first is
 the own-node rule: DMA handles, interrupts, register mappings and PCI
 configuration handles are allocated from the driver's `OwnNode`, which
-only the attach glue creates.
+only the attach glue creates. Minor nodes, property updates and LDI
+identifiers, which the kernel ties to the node and its driver, need it
+too.
 
 Two things are not there yet. The hardware parts of the safe layer have
 only been checked against the gate source and the compiler, because
