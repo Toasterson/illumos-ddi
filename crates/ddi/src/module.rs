@@ -174,9 +174,10 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
     /// piece begins and `len` the length that is still to be mapped. The
     /// method must describe the memory by calling `devmap_devmem_setup(9F)`
     /// or `devmap_umem_setup(9F)` on `dhp` and return the number of bytes it
-    /// validated, a multiple of the page size that is at most `len` rounded
-    /// up to a whole page (`mmap(2)` passes the length unrounded); the
-    /// framework calls it again for the rest. `model` is the data model of
+    /// validated, a non-zero multiple of the page size that is at most `len`
+    /// rounded up to a whole page (`mmap(2)` passes the length unrounded);
+    /// the framework calls it again for the rest. Any other length fails the
+    /// mapping with `EINVAL`. `model` is the data model of
     /// the calling process.
     ///
     /// Any error fails the `mmap(2)`. `devmap_setup(9F)` reports every
@@ -598,12 +599,14 @@ pub mod glue {
         // may be validated up to the end of its page, but not beyond.
         let page = unsafe { sys::ptob(1) } as usize;
         match inst.devmap(minor, handle, off, len, model, &ctx) {
-            Ok(n) if (n <= len || n - len < page) && !maplen.is_null() => {
+            Ok(n) if n != 0 && n % page == 0 && (n <= len || n - len < page) && !maplen.is_null() => {
                 unsafe { *maplen = n };
                 0
             }
-            // More than was asked for is a driver bug; refuse the mapping
-            // rather than let the framework map beyond the request.
+            // Nothing, a partial page or more than was asked for is a driver
+            // bug; refuse the mapping rather than let the framework map beyond
+            // the request, reject the length, or call again for ever (its
+            // loop only advances by the validated length).
             Ok(_) => sys::errno::EINVAL,
             Err(e) => e.get(),
         }
