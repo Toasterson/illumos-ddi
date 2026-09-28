@@ -369,7 +369,7 @@ impl ddi::Driver for RNull {
 }
 
 impl ddi::CharDevice for RNullInstance {
-    // open, close, read, write, ioctl; each has a sensible default
+    // open, clone_open, close, read, write, ioctl; each has a sensible default
 }
 ```
 
@@ -384,6 +384,16 @@ attach and reads it back out on detach. This is what makes `getinfo(9E)`
 and the mapping from `dev_t` to instance in the `cb_ops` glue work without
 any driver code. On a failed detach the framework hands the instance back
 to the slot, so a driver that refuses to detach cannot lose its state.
+
+A driver that needs state per open file implements `clone_open` instead of
+`open`. It returns a fresh minor number, and the glue stores
+`makedevice(getmajor(dev), minor)` through the `devp` argument of
+`open(9E)`, so the new file has its own device number and gets its own
+`close(9E)` when its last reference goes away. The returned minor must map
+to the same instance through `instance_of_minor`, and should stay within
+18 bits (`L_MAXMIN32`) if 32-bit processes may open the device. The
+default `clone_open` calls `open` and keeps the device number. The DRM core
+in illumos-drm uses this for its per-file authentication and master state.
 
 ### 5.3 Allocation context is a type, not a flag
 
