@@ -21,7 +21,7 @@ use crate::context::Sleepable;
 use crate::cred::Cred;
 use crate::device::{DevInfo, Instance, Minor, OpenFlags, OpenType};
 use crate::error::{DdiError, Errno};
-use crate::ioctl::{IoctlArg, IoctlCmd};
+use crate::ioctl::{DataModel, IoctlArg, IoctlCmd};
 use crate::sys;
 use crate::uio::Uio;
 
@@ -162,6 +162,62 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
         _ctx: &Sleepable,
     ) -> Result<i32, Errno> {
         Err(Errno::ENOTTY)
+    }
+    /// Handles `devmap(9E)`, which validates a user mapping of the device
+    /// and describes the memory behind it.
+    ///
+    /// The glue only calls this for a module declared with
+    /// `ops: [char, devmap]`; that form installs `ddi_devmap_segmap(9F)` as
+    /// the `segmap(9E)` entry point and sets `D_DEVMAP`, so `mmap(2)` on the
+    /// device runs `devmap_setup(9F)`, which calls this method once for each
+    /// piece of the requested range. `off` is the user offset at which the
+    /// piece begins and `len` the length that is still to be mapped. The
+    /// method must describe the memory by calling `devmap_devmem_setup(9F)`
+    /// or `devmap_umem_setup(9F)` on `dhp` and return the number of bytes it
+    /// validated, a multiple of the page size that is at most `len` rounded
+    /// up to a whole page (`mmap(2)` passes the length unrounded); the
+    /// framework calls it again for the rest. `model` is the data model of
+    /// the calling process.
+    ///
+    /// Any error fails the `mmap(2)`. `devmap_setup(9F)` reports every
+    /// failure of this entry point to the caller as `ENXIO`, whatever the
+    /// method returned. The default fails with `ENXIO`.
+    ///
+    /// No `devmap_map(9E)` or `devmap_unmap(9E)` callback is guaranteed to
+    /// follow a successful call: if the framework cannot find an address for
+    /// the mapping afterwards, it frees the handle without calling either.
+    /// A driver that takes a reference here must therefore be able to
+    /// release it without those callbacks.
+    fn devmap(
+        &self,
+        _minor: Minor,
+        _dhp: DevmapHandle<'_>,
+        _off: u64,
+        _len: usize,
+        _model: DataModel,
+        _ctx: &Sleepable,
+    ) -> Result<usize, Errno> {
+        Err(Errno::ENXIO)
+    }
+}
+
+/// The mapping handle that `devmap(9E)` receives, a `devmap_cookie_t`.
+///
+/// It identifies the mapping being set up and is only valid for the
+/// duration of the [`CharDevice::devmap`] call that receives it. The driver
+/// passes [`DevmapHandle::as_raw`] to `devmap_umem_setup(9F)` or
+/// `devmap_devmem_setup(9F)` together with its `devmap_callback_ctl(9S)`;
+/// the callbacks registered there receive the same handle again, as a raw
+/// `devmap_cookie_t`, for as long as the mapping exists.
+pub struct DevmapHandle<'a> {
+    raw: sys::devmap_cookie_t,
+    _call: core::marker::PhantomData<&'a ()>,
+}
+
+impl DevmapHandle<'_> {
+    /// Returns the raw handle, for the `devmap_*_setup(9F)` functions.
+    pub fn as_raw(&self) -> sys::devmap_cookie_t {
+        self.raw
     }
 }
 
@@ -513,6 +569,46 @@ pub mod glue {
         }
     }
 
+    /// The `devmap(9E)` entry point for a [`CharDevice`], installed by the
+    /// `ops: [char, devmap]` form of [`module!`](crate::module!).
+    pub unsafe extern "C" fn devmap<D: ModuleDef>(
+        dev: sys::dev_t,
+        dhp: sys::devmap_cookie_t,
+        off: sys::offset_t,
+        len: sys::size_t,
+        maplen: *mut sys::size_t,
+        model: sys::uint_t,
+    ) -> sys::c_int
+    where
+        D::Instance: CharDevice,
+    {
+        let Some((minor, inst)) = (unsafe { D::state().instance_for_dev(dev) }) else { return sys::errno::ENXIO };
+        // A negative offset cannot name anything; offset_t is signed only
+        // because it is shared with seek offsets.
+        let Ok(off) = u64::try_from(off) else { return sys::errno::EINVAL };
+        // devmap(9E) is called from mmap(2), in the context of the mapping
+        // process, where blocking is allowed.
+        let ctx = unsafe { Sleepable::assume() };
+        // `model` is the caller's DATAMODEL_* value, which shares its bits
+        // with DDI_MODEL_*.
+        let ilp32 = (model as sys::c_int) & sys::DDI_MODEL_MASK == sys::model_t::DDI_MODEL_ILP32.0;
+        let model = if ilp32 { DataModel::Ilp32 } else { DataModel::Lp64 };
+        let handle = DevmapHandle { raw: dhp, _call: core::marker::PhantomData };
+        // mmap(2) passes the length as the caller gave it, so the last piece
+        // may be validated up to the end of its page, but not beyond.
+        let page = unsafe { sys::ptob(1) } as usize;
+        match inst.devmap(minor, handle, off, len, model, &ctx) {
+            Ok(n) if (n <= len || n - len < page) && !maplen.is_null() => {
+                unsafe { *maplen = n };
+                0
+            }
+            // More than was asked for is a driver bug; refuse the mapping
+            // rather than let the framework map beyond the request.
+            Ok(_) => sys::errno::EINVAL,
+            Err(e) => e.get(),
+        }
+    }
+
     /// A stub with the signature of `identify(9E)` and `probe(9E)` that
     /// returns 0, standing in for the kernel's `nulldev`.
     pub unsafe extern "C" fn nulldev_dip(_dip: sys::dev_info_t) -> sys::c_int {
@@ -616,8 +712,12 @@ pub mod glue {
 /// Defines a kernel module for a [`Driver`].
 ///
 /// The `ops` list names the entry-point families the instance type
-/// implements. `[char]` wires the [`CharDevice`] methods into `cb_ops`; an
-/// empty list produces a module whose `cb_ops` slots all return `ENXIO`.
+/// implements. `[char]` wires the [`CharDevice`] methods into `cb_ops`;
+/// `[char, devmap]` does the same and also makes the device mappable
+/// through the devmap framework: [`CharDevice::devmap`] becomes the
+/// `devmap(9E)` entry point, `ddi_devmap_segmap(9F)` the `segmap(9E)` entry
+/// point, and `D_DEVMAP` is set in `cb_flag`. An empty list produces a
+/// module whose `cb_ops` slots all return `ENXIO`.
 ///
 /// ```ignore
 /// ddi::module! {
@@ -634,7 +734,22 @@ macro_rules! module {
             close: Some($crate::module::glue::close::<$drv>),
             read: Some($crate::module::glue::read::<$drv>),
             write: Some($crate::module::glue::write::<$drv>),
-            ioctl: Some($crate::module::glue::ioctl::<$drv>));
+            ioctl: Some($crate::module::glue::ioctl::<$drv>),
+            devmap: Some($crate::module::glue::nodev_devmap),
+            segmap: Some($crate::module::glue::nodev_segmap),
+            flag: 0);
+    };
+    (driver: $drv:ty, ops: [char, devmap] $(,)?) => {
+        $crate::module!(@common $drv);
+        $crate::module!(@cb_ops $drv,
+            open: Some($crate::module::glue::open::<$drv>),
+            close: Some($crate::module::glue::close::<$drv>),
+            read: Some($crate::module::glue::read::<$drv>),
+            write: Some($crate::module::glue::write::<$drv>),
+            ioctl: Some($crate::module::glue::ioctl::<$drv>),
+            devmap: Some($crate::module::glue::devmap::<$drv>),
+            segmap: Some($crate::sys::ddi_devmap_segmap),
+            flag: $crate::sys::D_DEVMAP);
     };
     (driver: $drv:ty, ops: [] $(,)?) => {
         $crate::module!(@common $drv);
@@ -643,9 +758,13 @@ macro_rules! module {
             close: Some($crate::module::glue::nodev_close),
             read: Some($crate::module::glue::nodev_rw),
             write: Some($crate::module::glue::nodev_rw),
-            ioctl: Some($crate::module::glue::nodev_ioctl));
+            ioctl: Some($crate::module::glue::nodev_ioctl),
+            devmap: Some($crate::module::glue::nodev_devmap),
+            segmap: Some($crate::module::glue::nodev_segmap),
+            flag: 0);
     };
-    (@cb_ops $drv:ty, open: $open:expr, close: $close:expr, read: $read:expr, write: $write:expr, ioctl: $ioctl:expr) => {
+    (@cb_ops $drv:ty, open: $open:expr, close: $close:expr, read: $read:expr, write: $write:expr, ioctl: $ioctl:expr,
+     devmap: $devmap:expr, segmap: $segmap:expr, flag: $flag:expr) => {
         static __DDI_CB_OPS: $crate::module::StaticCell<$crate::sys::cb_ops> =
             $crate::module::StaticCell::new($crate::sys::cb_ops {
                 cb_open: $open,
@@ -656,13 +775,13 @@ macro_rules! module {
                 cb_read: $read,
                 cb_write: $write,
                 cb_ioctl: $ioctl,
-                cb_devmap: Some($crate::module::glue::nodev_devmap),
+                cb_devmap: $devmap,
                 cb_mmap: Some($crate::module::glue::nodev_mmap),
-                cb_segmap: Some($crate::module::glue::nodev_segmap),
+                cb_segmap: $segmap,
                 cb_chpoll: Some($crate::sys::nochpoll),
                 cb_prop_op: Some($crate::sys::ddi_prop_op),
                 cb_str: ::core::ptr::null_mut(),
-                cb_flag: $crate::sys::D_MP | $crate::sys::D_64BIT | $crate::sys::D_NEW,
+                cb_flag: $crate::sys::D_MP | $crate::sys::D_64BIT | $crate::sys::D_NEW | $flag,
                 cb_rev: $crate::sys::CB_REV,
                 cb_aread: Some($crate::module::glue::nodev_aio),
                 cb_awrite: Some($crate::module::glue::nodev_aio),

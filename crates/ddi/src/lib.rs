@@ -75,7 +75,7 @@ pub use ioctl::{DataModel, IoctlArg, IoctlCmd};
 pub use kmem::KBox;
 pub use kstat::{IoKstat, KstatDataType, KstatId, NamedKstat, TypedKstat};
 pub use ldi::{LdiFlags, LdiHandle, LdiIdent, LdiOpenType, LdiPropFlags};
-pub use module::{CharDevice, Driver};
+pub use module::{CharDevice, DevmapHandle, Driver};
 pub use nvlist::{
     AllocPolicy, KmNoSleep, KmSleep, NvEncoding, NvList, NvListRef, NvPair, NvStrings, NvValue, PackedNvList,
 };
@@ -101,7 +101,7 @@ pub mod prelude {
     pub use crate::kmem::KBox;
     pub use crate::kstat::{IoKstat, KstatDataType, KstatId, NamedKstat, TypedKstat};
     pub use crate::ldi::{LdiFlags, LdiHandle, LdiIdent};
-    pub use crate::module::{CharDevice, Driver};
+    pub use crate::module::{CharDevice, DevmapHandle, Driver};
     pub use crate::nvlist::{NvEncoding, NvList, NvListRef};
     pub use crate::pci::PciConfig;
     pub use crate::prop::{PropBuf, PropError, PropString, PropStrings, Props};
