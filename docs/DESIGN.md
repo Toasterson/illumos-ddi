@@ -861,12 +861,13 @@ outside the kernel.
 exercised with `dd`, a small ioctl test program and `rem_drv`.
 
 `rselftest` is a pseudo driver that tests the safe layer from inside the
-kernel. When it attaches it runs 35 checks over properties from its `.conf`
+kernel. When it attaches it runs 38 checks over properties from its `.conf`
 file and published by itself, mutexes, reader-writer locks with upgrade and
 downgrade, semaphores, condition variable timeouts, ticks, `delay`, busy
 waiting, `lbolt`, one-shot timeouts and their cancellation, task queues
-with blocking and non-blocking dispatch, and name-value lists including
-packing in both encodings. It logs each result with `dev_err(9F)`, counts
+with blocking and non-blocking dispatch, name-value lists including
+packing in both encodings, and the own-node rule of section 5.12 for DMA
+handles. It logs each result with `dev_err(9F)`, counts
 them in a kstat and reports them through an ioctl. A second ioctl runs 7
 layered-device checks, which the manual forbids in `attach`: it opens its
 own node through LDI and reads a byte pattern through a kernel-space `uio`,
@@ -884,9 +885,26 @@ caller at all, because its read routine uses `uzero` regardless of the
 segment, which is why the LDI test reads from the driver itself. The logs
 are in the workspace under `logs/oibldofgate/20260926-rselftest-*`.
 
-Register access, PCI configuration space, interrupts and DMA need a device
-to bind to and are not covered by `rselftest`. They were checked against
-the gate source and the compiler only. Tests can also register with
+The three DMA checks only allocate and never bind. The driver's own
+pseudo node reaches the kernel and gets `DmaError::BadAttr`, because the
+pseudo nexus refuses DMA handles. An `OwnNode` made with the `unsafe`
+`OwnNode::from_raw` for `ddi_root_node(9F)`, and one for the pseudo nexus
+node, which has a parent but another driver's major number, must both get
+`DmaError::NotOwnNode` from the guard. A handle allocated against
+expectation is freed at once and reported as a failure; freeing a
+root-node handle works, only binding it panics.
+
+On 28 September 2026 all 45 checks (38 at attach and 7 LDI checks) passed
+on a disposable guest on Hephaistos with the same kernel as `oibldofgate`
+(illumos `cda5b9a49f`). As a negative control, a build with the guard
+patched out reported the two guard checks as failed and did not panic.
+The logs are in the workspace under
+`logs/hephaistos/illumos-drm/20260928-ddi-own-node-*`.
+
+Apart from that DMA check, register access, PCI configuration space,
+interrupts and DMA need a device to bind to and are not covered by
+`rselftest`. They were checked against the gate source and the compiler
+only. Tests can also register with
 `ktest(9F)`, whose bindings now exist in `ddi-ktest-sys`.
 
 ### 8.5 Test infrastructure

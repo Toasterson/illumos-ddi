@@ -20,8 +20,15 @@ layout and every symbol was checked against the running kernel. The safe
 layer now covers what a leaf driver needs: properties, locks of every
 kind, timers and task queues, kernel statistics, register and PCI
 configuration access, interrupts, DMA, name-value lists and layered
-devices. A second example driver, `rselftest`, runs 42 checks of the safe
+devices. A second example driver, `rselftest`, runs 45 checks of the safe
 layer inside the running kernel, and all of them pass.
+
+Every kernel panic traced to misuse of the DDI becomes a type rule of the
+safe layer, with a runtime guard, regression tests and an entry in the
+"Panics prevented" table of `docs/DESIGN.md` section 5.12. The first is
+the own-node rule: DMA handles, interrupts, register mappings and PCI
+configuration handles are allocated from the driver's `OwnNode`, which
+only the attach glue creates.
 
 Two things are not there yet. The hardware parts of the safe layer have
 only been checked against the gate source and the compiler, because
