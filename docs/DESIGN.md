@@ -362,7 +362,7 @@ impl ddi::Driver for RNull {
     type Instance = RNullInstance;   // per-instance state, Send + Sync
     const LINKINFO: &'static CStr = c"Rust null pseudo device v1";
 
-    fn attach(dev: DevInfo, ctx: &Sleepable) -> Result<Self::Instance, DdiError>;
+    fn attach(node: OwnNode, ctx: &Sleepable) -> Result<Self::Instance, DdiError>;
     fn detach(inst: Self::Instance, dev: DevInfo, ctx: &Sleepable)
         -> Result<(), (Self::Instance, DdiError)>;
     // resume, suspend and quiesce have defaults; instance_of_minor defaults to identity
@@ -496,7 +496,22 @@ lock to release it.
 `DevInfo` has no public constructor. The framework creates it in the glue
 for `attach`, `detach` and `getinfo` and passes it to the driver. It is
 `Copy`, and it may be stored in the instance, because the instance is
-destroyed at detach and therefore cannot outlive the node.
+destroyed at detach and therefore cannot outlive the node. A `DevInfo` is
+for queries: properties, names, the instance number and logging.
+
+Resources that the kernel ties to the requesting device need the driver's
+own node, and the manual pages say so: `ddi_dma_alloc_handle(9F)` takes
+"the device's dev_info structure" and adds that "a DMA handle must only be
+used by the device for which it was allocated". Those constructors take an
+`OwnNode` instead: `DmaHandle::new` and `try_new`, `Interrupts::alloc` and
+`try_alloc`, `RegMap::map`, `RegBlock::map` and `PciConfig::setup`. Only
+the glue creates an `OwnNode`, in `attach(9E)` with `DDI_ATTACH`, from the
+node the kernel passed, and hands it to `Driver::attach` by value. The
+driver keeps it in its instance if it allocates such resources later. It
+is neither `Copy` nor `Clone`, so one instance cannot lend its node to
+another, and it dereferences to its `DevInfo` for queries. A node from
+anywhere else needs the `unsafe` `OwnNode::from_raw`. Section 5.12 gives
+the reason and the runtime guard behind it.
 
 `MinorNode` is an RAII type. Creating one calls `ddi_create_minor_node`;
 dropping it calls `ddi_remove_minor_node`. Its constructor takes
@@ -640,7 +655,44 @@ manipulation, the typed LDI ioctls (the target decides how many bytes it
 copies under `FKIOCTL`, so the caller must promise that the command matches
 the type) and everything in the private tier remain `unsafe fn` with
 documented preconditions. The safe crate should never claim more than the
-manual page guarantees.
+manual page guarantees. `OwnNode::from_raw` is `unsafe` for a reason of
+this kind: nothing but the attach glue can know that a node is the
+driver's own.
+
+### 5.12 Panics become types
+
+A kernel panic that is traced to misuse of a DDI interface, where the
+driver did something its manual page forbids, is a gap in this crate as
+much as a bug in the driver, because the safe layer exists so that such
+rules cannot be broken without `unsafe`. Every such panic therefore leads
+to four changes to the safe layer, made together:
+
+1. A type or capability that makes the misuse unrepresentable in safe
+   code.
+2. A runtime guard wherever the type can be bypassed with `unsafe`, which
+   turns the misuse into an error before the kernel is called.
+3. Regression tests: a `compile_fail` doctest for the type rule, with the
+   expected error code and a compiling twin that differs only in the rule,
+   and an in-kernel `rselftest` check for the guard. The check must not be
+   able to panic even if the guard were missing.
+4. A row in the table below that names the panic and its evidence.
+
+Stable rustdoc does not check the error code of a `compile_fail` doctest;
+the pinned nightly does, so the doctests are also run with it
+(`cargo +nightly-2026-04-16 test -p ddi --no-default-features --doc`).
+
+Some rules resist types. The instance type is `'static`, so the compiler
+cannot tie an `OwnNode` to the interval between attach and detach; it can
+only make the node unique and impossible to construct without `unsafe`.
+Leaking it past detach (a forgotten `Timeout` that captured it, a
+`KBox::into_raw`) remains possible in safe Rust, as leaking always is, and
+no guard can see it, because the node of a detached instance may be freed.
+
+Panics prevented:
+
+| Date | Symptom | Root cause | Type rule | Guard | Tests | Evidence |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-28 | `BAD TRAP: type=e (#pf Page fault)`, NULL pointer dereference at `pc=0` in `ddi_dma_addr_bind_handle`, at the first bind (illumos `cda5b9a49f`) | A pseudo driver allocated its DMA handles against `ddi_root_node(9F)`, not its own node. Rootnex accepts the root as its own requester, and the bind then calls the root node's `devi_bus_dma_bindfunc`, which is never filled because the root has no parent. | `DmaHandle::new` and `try_new` take `&OwnNode`, which only the attach glue creates and which is neither `Copy` nor `Clone`; a foreign node needs `unsafe` `OwnNode::from_raw`. `Interrupts::alloc`, `RegMap::map`, `RegBlock::map` and `PciConfig::setup`, which dereference the root node's missing parent, follow the same rule. | Before `ddi_dma_alloc_handle`, `DmaError::NotOwnNode` (`ENXIO`) for a node without a parent or bound to another driver than the one attached; the other constructors refuse the same nodes. | `compile_fail` doctests on `OwnNode` (a `DevInfo` for DMA, E0308; copy, E0507; clone, E0277; `from_raw` without `unsafe`, E0133); `rselftest` checks "dma root node refused by guard", "dma other driver's node refused by guard", "dma own pseudo node is BadAttr" | Workspace note `notes/illumos-drm-dma-panic-20260928.md`; illumos-drm pull request 3 |
 
 ## 6. Build and link model
 
