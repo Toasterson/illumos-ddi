@@ -13,7 +13,13 @@
 //! point is to report failures, not to hide them behind a missing device.
 //!
 //! Register access, PCI configuration space, interrupts and DMA need a real
-//! device to bind to, so they are not exercised here.
+//! device to bind to, so they are not exercised here, with one exception:
+//! the own-node rule for DMA handles. The driver checks that its own pseudo
+//! node gets `DmaError::BadAttr` (the pseudo nexus does no DMA) and that the
+//! runtime guard refuses the root node and the pseudo nexus node with
+//! `DmaError::NotOwnNode` before the kernel is asked. Those checks only
+//! allocate; nothing is ever bound, so even a missing guard cannot panic
+//! the system.
 #![no_std]
 
 use core::ffi::CStr;
@@ -265,6 +271,7 @@ impl Driver for RSelfTest {
         test_time(&mut r, ctx);
         test_taskq(&mut r, ctx);
         test_nvlist(&mut r, ctx);
+        test_dma(&mut r, &own, ctx);
 
         let stats = TypedKstat::<SelfTestStats>::new(
             KstatId { module: c"rselftest", instance: inst, name: c"selftest", class: c"misc" },
@@ -339,6 +346,55 @@ fn test_nvlist(r: &mut Report, ctx: &Sleepable) {
         Err(_) => false,
     };
     r.check("nvlist without sleeping", nosleep);
+}
+
+/// Checks the own-node rule of `ddi_dma_alloc_handle(9F)` without ever
+/// binding a handle.
+///
+/// Binding a handle allocated against the root node panics the system
+/// (28 September 2026, `notes/illumos-drm-dma-panic-20260928.md` in the
+/// workspace); allocating and freeing it does not. So every check here only
+/// allocates, and a handle that is allocated against expectation is freed
+/// at once by its drop and reported as a failure. The checks therefore
+/// cannot panic even if the guard in `DmaHandle::alloc` were missing.
+fn test_dma(r: &mut Report, node: &OwnNode, ctx: &Sleepable) {
+    const ATTR: DmaAttr = DmaAttr::bits64();
+
+    // The driver's own node passes the guard and reaches the kernel. The
+    // parent is the pseudo nexus, whose bus_dma_allochdl is
+    // ddi_no_dma_allochdl, so the documented answer is DDI_DMA_BADATTR.
+    let own = DmaHandle::new(node, &ATTR, ctx);
+    r.check("dma own pseudo node is BadAttr", matches!(own, Err(DmaError::BadAttr)));
+    drop(own);
+
+    // SAFETY: test-only use of the bypass, as `OwnNode::from_raw`
+    // documents. The root node stays in the device tree for ever, and the
+    // value is only used to test the guard: nothing is bound.
+    let root = unsafe { OwnNode::from_raw(ddi::sys::ddi_root_node()) };
+    let sleep = DmaHandle::new(&root, &ATTR, ctx);
+    let nosleep = DmaHandle::try_new(&root, &ATTR);
+    r.check(
+        "dma root node refused by guard",
+        matches!(sleep, Err(DmaError::NotOwnNode)) && matches!(nosleep, Err(DmaError::NotOwnNode)),
+    );
+    // Were either allocated, dropping frees it; ddi_dma_free_handle works
+    // for the root node, only binding does not.
+    drop((sleep, nosleep));
+
+    // The parent of this pseudo node is the pseudo nexus, a node with a
+    // parent but bound to another driver, which the major check refuses.
+    // Without the guard the kernel would answer BadAttr here, not panic.
+    let parent = unsafe { ddi::sys::ddi_get_parent(node.as_raw()) };
+    let refused = if parent.is_null() {
+        false
+    } else {
+        // SAFETY: test-only, as above. The parent nexus cannot detach while
+        // a child is attached, and nothing is bound.
+        let nexus = unsafe { OwnNode::from_raw(parent) };
+        let h = DmaHandle::try_new(&nexus, &ATTR);
+        matches!(h, Err(DmaError::NotOwnNode))
+    };
+    r.check("dma other driver's node refused by guard", refused);
 }
 
 /// The byte the device returns at offset `off`.
