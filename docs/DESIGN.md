@@ -267,6 +267,22 @@ checked against.
 | `ddi-cmlb-sys` | `cmlb.h` | none | `misc/cmlb` | none | Planned, private by omission |
 | `illumos-kernel-private-sys` | `virtio.h` (`io/virtio/`), `vnode.h`/`vfs.h`, `taskq.h` (raw), `zone.h`, items from `esunddi.h` | none | varies | none | Planned. Private, pinned to a gate commit, usable only with `--features unstable-gate-<hash>` |
 
+The private tier has its first committed consumer. On 27 September 2026
+the owner decided to build a Rust DRM core and a Rust virtio-gpu driver on
+these crates (decision record: `notes/drm-rust-core-assessment-20260927.md`
+in the illumos workspace). The core lives in
+[illumos-drm](https://code.aopc.cloud/illumos/illumos-drm). Its first two
+milestones, R0 (device registration, per-file state and the core ioctls)
+and R1 (GEM objects and dumb buffers), were done on 28 September 2026 with
+the public tier alone, after clone opens and the `devmap(9E)` entry point
+were added to the `ddi` glue. The later milestones need the private tier:
+`falloc`/`setf` from `os/fio.c` for the anonymous file descriptors of PRIME,
+syncobj export and `sync_file` (R2), the virtio framework for the
+virtio-gpu driver (R4), `gfx_private` for the console framebuffer
+hand-over, and `hat_*` for write-combining page pools, which only a later
+TTM-like layer needs. So `illumos-kernel-private-sys` moves ahead of the
+other planned crates.
+
 The earlier plan had separate crates for UFM, PCI, LDI and STREAMS and
 Cargo features for registers, interrupts, DMA and fault management inside
 `ddi-sys`. Both were dropped. All of those families resolve from `genunix`
