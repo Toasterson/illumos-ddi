@@ -60,7 +60,10 @@ impl Driver for RNull {
     type Instance = RNullInstance;
     const LINKINFO: &'static core::ffi::CStr = c"Rust null pseudo device v1";
 
-    fn attach(dev: DevInfo, _ctx: &Sleepable) -> Result<RNullInstance, DdiError> {
+    fn attach(node: OwnNode, _ctx: &Sleepable) -> Result<RNullInstance, DdiError> {
+        // A device without DMA, interrupts or registers only needs the node
+        // for queries, so the capability is not kept.
+        let dev = node.dev();
         let inst = dev.instance();
         let minor = Minor(u32::try_from(inst.0).map_err(|_| DdiError)?);
         let node = dev.create_minor_node(c"rnull", MinorKind::Char, minor, NodeType::Pseudo)?;

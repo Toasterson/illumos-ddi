@@ -10,6 +10,12 @@
 //! an errno, `dev_ops` entry points return `DDI_SUCCESS` or `DDI_FAILURE`.
 //! [`Errno`] and [`DdiError`] keep them apart at the type level.
 //!
+//! The driver's own attached node is an [`OwnNode`], which only the
+//! [`module!`] glue creates and which is neither `Copy` nor `Clone`. DMA
+//! handles, interrupts, register mappings and PCI configuration handles
+//! are allocated from it, so safe code cannot allocate them for another
+//! node. [`DevInfo`] stays for queries.
+//!
 //! Some kernel functions may block and some contexts may not. A [`Sleepable`]
 //! token is proof that blocking is allowed. The framework hands one to every
 //! entry point that runs in thread context, and [`KBox::new`] and
@@ -62,7 +68,7 @@ pub mod uio;
 
 pub use context::{Atomic, Sleepable};
 pub use cred::Cred;
-pub use device::{DevInfo, Instance, Minor, MinorKind, MinorNode, NodeType, OpenFlags, OpenType};
+pub use device::{DevInfo, Instance, Minor, MinorKind, MinorNode, NodeType, OpenFlags, OpenType, OwnNode};
 pub use dma::{
     DmaAttr, DmaBinding, DmaBuffer, DmaCache, DmaCookie, DmaCookies, DmaDirection, DmaError, DmaHandle, DmaMode,
 };
@@ -91,7 +97,7 @@ pub use uio::Uio;
 pub mod prelude {
     pub use crate::context::{Atomic, Sleepable};
     pub use crate::cred::Cred;
-    pub use crate::device::{DevInfo, Instance, Minor, MinorKind, MinorNode, NodeType, OpenFlags, OpenType};
+    pub use crate::device::{DevInfo, Instance, Minor, MinorKind, MinorNode, NodeType, OpenFlags, OpenType, OwnNode};
     pub use crate::dma::{DmaAttr, DmaBinding, DmaBuffer, DmaCache, DmaDirection, DmaError, DmaHandle, DmaMode};
     pub use crate::error::{DdiError, Errno, Result};
     pub use crate::intr::{

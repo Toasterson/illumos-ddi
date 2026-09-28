@@ -34,10 +34,21 @@
 //!
 //! [`DmaHandle`] owns a `ddi_dma_handle_t` from `ddi_dma_alloc_handle(9F)`
 //! and frees it with `ddi_dma_free_handle(9F)` when dropped. The manual says
-//! that a handle carries one transfer at a time and belongs to the device
-//! it was allocated for. The handle is created from a [`DevInfo`], and it is
-//! consumed by the buffer that is allocated for it, so it cannot be shared
-//! between two buffers or bound twice.
+//! that a handle carries one transfer at a time and that "a DMA handle must
+//! only be used by the device for which it was allocated". The handle is
+//! created from the driver's [`OwnNode`], which only the attach glue hands
+//! out, rather than from a [`DevInfo`](crate::DevInfo), and it is consumed
+//! by the buffer that is allocated for it, so it cannot be shared between
+//! two buffers or bound twice.
+//!
+//! Allocating against another node is the misuse that panicked a test
+//! kernel on 28 September 2026: a handle allocated against
+//! `ddi_root_node(9F)` succeeds, and the first bind calls through a NULL
+//! function pointer. For code that obtains a foreign node with the `unsafe`
+//! [`OwnNode::from_raw`], [`DmaHandle::new`] refuses the root node and nodes
+//! bound to other drivers with [`DmaError::NotOwnNode`] before it calls the
+//! kernel. A pseudo device, whose parent is the `pseudo` nexus, gets
+//! [`DmaError::BadAttr`] from its own node, because that nexus does no DMA.
 //!
 //! # Memory
 //!
@@ -162,7 +173,8 @@
 //! ```ignore
 //! const ATTR: DmaAttr = DmaAttr::bits64().max_cookies(1);
 //!
-//! let handle = DmaHandle::new(&dev, &ATTR, ctx)?;
+//! // `node` is the `OwnNode` that `Driver::attach` received.
+//! let handle = DmaHandle::new(&node, &ATTR, ctx)?;
 //! let mut ring = DmaBuffer::new(handle, 4096, DmaMode::Consistent, DmaCache::Cached, ctx)?;
 //! let mut binding = ring.bind(DmaDirection::Bidirectional, ctx)?;
 //! let base = binding.single_cookie().ok_or(DmaError::TooBig)?.address;
@@ -178,7 +190,8 @@ use core::ptr::{self, NonNull};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::context::Sleepable;
-use crate::device::DevInfo;
+use crate::device::OwnNode;
+use crate::error::Errno;
 use crate::sys;
 
 /// The MMU page size on amd64, `MMU_PAGESIZE` in `sys/machparam.h`, which is
@@ -243,6 +256,13 @@ pub enum DmaError {
     /// A range given to a synchronisation method lies outside the buffer.
     /// This module checks the range before calling `ddi_dma_sync(9F)`.
     OutOfRange,
+    /// The node a handle was requested for cannot be the driver's own
+    /// attached node: it is the root node, or it is bound to another driver.
+    /// Only an [`OwnNode`] made with the `unsafe` [`OwnNode::from_raw`] can
+    /// get here. This module refuses before calling
+    /// `ddi_dma_alloc_handle(9F)`, because a handle for the root node would
+    /// panic the system in `ddi_dma_addr_bind_handle(9F)`.
+    NotOwnNode,
     /// A return code this crate does not know.
     Other(i32),
 }
@@ -292,7 +312,29 @@ impl fmt::Display for DmaError {
             DmaError::Failure => f.write_str("DDI_FAILURE"),
             DmaError::InvalidLength => f.write_str("zero-length DMA buffer"),
             DmaError::OutOfRange => f.write_str("DMA range outside the buffer"),
+            DmaError::NotOwnNode => f.write_str("DMA handle requested for a node that is not the driver's own"),
             DmaError::Other(c) => write!(f, "DDI_DMA_* code {c}"),
+        }
+    }
+}
+
+impl From<DmaError> for Errno {
+    /// Maps a DMA error to the errno a `cb_ops(9S)` entry point returns for
+    /// it: `ENOMEM` when resources are short or the request is too large, `EINVAL` for a request that can never succeed as made, `EFAULT`
+    /// when the device cannot reach the memory, `EBUSY` for a handle or memory
+    /// in use, `ENXIO` for [`DmaError::NotOwnNode`], and `EIO` otherwise.
+    fn from(e: DmaError) -> Errno {
+        match e {
+            DmaError::NoResources | DmaError::TooBig => Errno::ENOMEM,
+            DmaError::BadAttr
+            | DmaError::BadLimits
+            | DmaError::TooSmall
+            | DmaError::InvalidLength
+            | DmaError::OutOfRange => Errno::EINVAL,
+            DmaError::NoMapping => Errno::EFAULT,
+            DmaError::InUse | DmaError::Locked => Errno::EBUSY,
+            DmaError::NotOwnNode => Errno::ENXIO,
+            DmaError::PartialMap | DmaError::Stale | DmaError::Failure | DmaError::Other(_) => Errno::EIO,
         }
     }
 }
@@ -518,9 +560,9 @@ impl Default for DmaAttr {
 ///
 /// A handle stands for the resources of one transfer of one device. On its
 /// own it only serves to allocate a [`DmaBuffer`], which takes ownership of
-/// it. The handle is created from a [`DevInfo`] and, like a [`MinorNode`],
-/// belongs in the instance state, which is destroyed before the node goes
-/// away.
+/// it. The handle is created from the driver's [`OwnNode`] and, like a
+/// [`MinorNode`], belongs in the instance state, which is destroyed before
+/// the node goes away.
 ///
 /// [`MinorNode`]: crate::device::MinorNode
 pub struct DmaHandle {
@@ -537,29 +579,50 @@ unsafe impl Send for DmaHandle {}
 unsafe impl Sync for DmaHandle {}
 
 impl DmaHandle {
-    /// Allocates a handle with `ddi_dma_alloc_handle(9F)` and
-    /// `DDI_DMA_SLEEP`, waiting for resources if necessary, which is why a
-    /// [`Sleepable`] token is required. Fails with [`DmaError::BadAttr`]
-    /// when the attributes can never be satisfied.
-    pub fn new(dev: &DevInfo, attr: &DmaAttr, _ctx: &Sleepable) -> Result<DmaHandle, DmaError> {
-        Self::alloc(dev, attr, sys::DDI_DMA_SLEEP)
+    /// Allocates a handle for the driver's own node with
+    /// `ddi_dma_alloc_handle(9F)` and `DDI_DMA_SLEEP`, waiting for resources
+    /// if necessary, which is why a [`Sleepable`] token is required.
+    ///
+    /// The manual defines the node argument as "a pointer to the device's
+    /// dev_info structure" and says that "a DMA handle must only be used by
+    /// the device for which it was allocated", which is why this takes the
+    /// [`OwnNode`] that [`Driver::attach`](crate::Driver::attach) received
+    /// and not any [`DevInfo`](crate::DevInfo).
+    ///
+    /// Fails with [`DmaError::BadAttr`] when the attributes can never be
+    /// satisfied. A pseudo device gets `BadAttr` from its own node as well,
+    /// because the `pseudo` nexus refuses every DMA handle
+    /// (`ddi_no_dma_allochdl`), as observed on illumos `cda5b9a49f`. Fails
+    /// with [`DmaError::NotOwnNode`], without calling the kernel, when the
+    /// node is the root node or is bound to another driver, which only an
+    /// `unsafe` [`OwnNode::from_raw`] can produce.
+    pub fn new(node: &OwnNode, attr: &DmaAttr, _ctx: &Sleepable) -> Result<DmaHandle, DmaError> {
+        Self::alloc(node, attr, sys::DDI_DMA_SLEEP)
     }
 
-    /// Allocates a handle with `ddi_dma_alloc_handle(9F)` and
-    /// `DDI_DMA_DONTWAIT`. This is allowed in any context and fails with
-    /// [`DmaError::NoResources`] when resources are short.
-    pub fn try_new(dev: &DevInfo, attr: &DmaAttr) -> Result<DmaHandle, DmaError> {
-        Self::alloc(dev, attr, sys::DDI_DMA_DONTWAIT)
+    /// Allocates a handle for the driver's own node with
+    /// `ddi_dma_alloc_handle(9F)` and `DDI_DMA_DONTWAIT`. This is allowed in
+    /// any context and fails with [`DmaError::NoResources`] when resources
+    /// are short. Otherwise the same as [`DmaHandle::new`], including the
+    /// own-node rule.
+    pub fn try_new(node: &OwnNode, attr: &DmaAttr) -> Result<DmaHandle, DmaError> {
+        Self::alloc(node, attr, sys::DDI_DMA_DONTWAIT)
     }
 
-    fn alloc(dev: &DevInfo, attr: &DmaAttr, wait: sys::ddi_dma_callback_t) -> Result<DmaHandle, DmaError> {
+    fn alloc(node: &OwnNode, attr: &DmaAttr, wait: sys::ddi_dma_callback_t) -> Result<DmaHandle, DmaError> {
         attr.check()?;
+        // The guard for the unsafe bypass of the type rule: the root node
+        // allocates through its own nexus operations and then panics in
+        // ddi_dma_addr_bind_handle (NULL devi_bus_dma_bindfunc).
+        if !node.is_plausibly_own() {
+            return Err(DmaError::NotOwnNode);
+        }
         let mut raw: sys::ddi_dma_handle_t = ptr::null_mut();
-        // SAFETY: The node is valid for as long as the `DevInfo` exists, the
+        // SAFETY: The node is valid for as long as the `OwnNode` exists, the
         // attributes are a valid structure that the kernel copies, the
         // callback argument is one of the two sentinels, and `raw` is
         // writable.
-        let r = unsafe { sys::ddi_dma_alloc_handle(dev.as_raw(), attr.as_raw(), wait, ptr::null_mut(), &mut raw) };
+        let r = unsafe { sys::ddi_dma_alloc_handle(node.as_raw(), attr.as_raw(), wait, ptr::null_mut(), &mut raw) };
         DmaError::check(r)?;
         if raw.is_null() {
             return Err(DmaError::Failure);
@@ -1219,3 +1282,31 @@ impl Iterator for DmaCookies<'_> {
 impl ExactSizeIterator for DmaCookies<'_> {}
 
 impl FusedIterator for DmaCookies<'_> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn not_own_node_maps_to_enxio() {
+        assert_eq!(Errno::from(DmaError::NotOwnNode), Errno::ENXIO);
+    }
+
+    #[test]
+    fn errno_mapping() {
+        assert_eq!(Errno::from(DmaError::BadAttr), Errno::EINVAL);
+        assert_eq!(Errno::from(DmaError::NoResources), Errno::ENOMEM);
+        assert_eq!(Errno::from(DmaError::TooBig), Errno::ENOMEM);
+        assert_eq!(Errno::from(DmaError::NoMapping), Errno::EFAULT);
+        assert_eq!(Errno::from(DmaError::InUse), Errno::EBUSY);
+        assert_eq!(Errno::from(DmaError::Failure), Errno::EIO);
+        assert_eq!(Errno::from(DmaError::Other(-99)), Errno::EIO);
+    }
+
+    #[test]
+    fn default_attributes_pass_the_checks() {
+        assert_eq!(DmaAttr::bits64().check(), Ok(()));
+        assert_eq!(DmaAttr::bits32().max_cookies(4096).check(), Ok(()));
+        assert_eq!(DmaAttr::bits64().align(3).check(), Err(DmaError::BadAttr));
+    }
+}

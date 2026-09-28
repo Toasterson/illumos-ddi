@@ -19,7 +19,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::context::Sleepable;
 use crate::cred::Cred;
-use crate::device::{DevInfo, Instance, Minor, OpenFlags, OpenType};
+use crate::device::{DevInfo, Instance, Minor, OpenFlags, OpenType, OwnNode};
 use crate::error::{DdiError, Errno};
 use crate::ioctl::{DataModel, IoctlArg, IoctlCmd};
 use crate::sys;
@@ -44,7 +44,14 @@ pub trait Driver: Sized + 'static {
 
     /// Handles `attach(9E)` with `DDI_ATTACH`. Creates the instance state
     /// and, usually, the minor nodes.
-    fn attach(dev: DevInfo, ctx: &Sleepable) -> Result<Self::Instance, DdiError>;
+    ///
+    /// `node` is the capability for the node being attached, the only way to
+    /// allocate the resources the kernel ties to the requesting device (DMA
+    /// handles, interrupts, register mappings, PCI configuration handles).
+    /// It dereferences to the node's [`DevInfo`] for queries. A driver that
+    /// allocates such resources after attach keeps `node` in its instance
+    /// state, which the framework destroys at detach; see [`OwnNode`].
+    fn attach(node: OwnNode, ctx: &Sleepable) -> Result<Self::Instance, DdiError>;
 
     /// Handles `detach(9E)` with `DDI_DETACH`. Returning the instance inside
     /// `Err` refuses the detach, and the framework keeps the instance
@@ -392,7 +399,11 @@ pub mod glue {
                     return sys::DDI_FAILURE;
                 }
                 let slot = unsafe { sys::ddi_get_soft_state(st.soft(), inst.0) } as *mut Slot<D::Instance>;
-                match D::attach(dev, &ctx) {
+                // The only place an OwnNode is made from a kernel-supplied
+                // node: the node of this attach, which the instance state
+                // (where the driver keeps it) cannot outlive.
+                let node = unsafe { OwnNode::attached(dip) };
+                match D::attach(node, &ctx) {
                     Ok(state) => unsafe {
                         (*slot).dip = dip;
                         (*slot).inst.write(state);

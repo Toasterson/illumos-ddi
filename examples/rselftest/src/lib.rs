@@ -253,7 +253,8 @@ impl Driver for RSelfTest {
     type Instance = Instance;
     const LINKINFO: &'static CStr = c"Rust DDI self-test v1";
 
-    fn attach(dev: DevInfo, ctx: &Sleepable) -> Result<Instance, DdiError> {
+    fn attach(own: OwnNode, ctx: &Sleepable) -> Result<Instance, DdiError> {
+        let dev = own.dev();
         let inst = dev.instance();
         let minor = Minor(u32::try_from(inst.0).map_err(|_| DdiError)?);
         let node = dev.create_minor_node(c"rselftest", MinorKind::Char, minor, NodeType::Pseudo)?;
