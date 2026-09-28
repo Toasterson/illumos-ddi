@@ -116,6 +116,11 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
     /// [`Driver::instance_of_minor`]. If it does not, the glue calls
     /// [`close`](CharDevice::close) with the returned minor, so that the
     /// driver can release what it set up, and fails the open with `ENXIO`.
+    ///
+    /// Keep clone minors at or below `L_MAXMIN32` (`0x3ffff`, 18 bits) if
+    /// 32-bit processes may open the device: a larger minor number does not
+    /// fit the 32-bit `dev_t`, and `fstat(2)` on the file fails with
+    /// `EOVERFLOW` in such a process.
     fn clone_open(
         &self,
         minor: Minor,
