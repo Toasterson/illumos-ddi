@@ -353,7 +353,7 @@ instance type if it is a character device, and invokes the `module!` macro:
 ```rust
 ddi::module! {
     driver: RNull,
-    ops: [char],                 // or [] for a module without cb_ops
+    ops: [char],                 // [char, devmap] to allow mmap(2); [] for no cb_ops
 }
 
 pub struct RNull;
@@ -369,7 +369,7 @@ impl ddi::Driver for RNull {
 }
 
 impl ddi::CharDevice for RNullInstance {
-    // open, close, read, write, ioctl; each has a sensible default
+    // open, clone_open, close, read, write, ioctl, devmap; each has a sensible default
 }
 ```
 
@@ -384,6 +384,35 @@ attach and reads it back out on detach. This is what makes `getinfo(9E)`
 and the mapping from `dev_t` to instance in the `cb_ops` glue work without
 any driver code. On a failed detach the framework hands the instance back
 to the slot, so a driver that refuses to detach cannot lose its state.
+
+A driver that needs state per open file implements `clone_open` instead of
+`open`. It returns a fresh minor number, and the glue stores
+`makedevice(getmajor(dev), minor)` through the `devp` argument of
+`open(9E)`, so the new file has its own device number and gets its own
+`close(9E)` when its last reference goes away. The returned minor must map
+to the same instance through `instance_of_minor`, and should stay within
+18 bits (`L_MAXMIN32`) if 32-bit processes may open the device. The
+default `clone_open` calls `open` and keeps the device number. The DRM core
+in illumos-drm uses this for its per-file authentication and master state.
+
+A driver whose memory user processes map with `mmap(2)` declares
+`ops: [char, devmap]` and implements `devmap`. That form installs the
+glue as `devmap(9E)`, `ddi_devmap_segmap(9F)` as `segmap(9E)`, and sets
+`D_DEVMAP`, so every `mmap(2)` goes through `devmap_setup(9F)`. The method
+receives the minor number, the mapping handle as a `DevmapHandle` that
+lives only for the call, the user offset, the remaining length and the
+caller's data model; it describes the memory with `devmap_umem_setup(9F)`
+or `devmap_devmem_setup(9F)` and returns the validated length. The
+`devmap_callback_ctl(9S)` callbacks stay with the driver, which passes
+them to the setup function, because their private data and lifetime rules
+are the driver's own. Two facts from `seg_dev.c` shape the contract and
+are documented on the method: `devmap_setup` reports any failure of the
+entry point as `ENXIO`, and a handle can be freed after a successful
+`devmap(9E)` without any `devmap_map(9E)` or `devmap_unmap(9E)` call, so a
+reference taken in `devmap` needs another way back. The default fails
+with `ENXIO`, and `[char]` keeps the `nodev` stubs, so existing drivers
+are unchanged. The DRM core in illumos-drm uses this for GEM object
+mappings.
 
 ### 5.3 Allocation context is a type, not a flag
 
