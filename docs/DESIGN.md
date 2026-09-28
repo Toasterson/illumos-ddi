@@ -955,6 +955,19 @@ patched out reported the two guard checks as failed and did not panic.
 The logs are in the workspace under
 `logs/hephaistos/illumos-drm/20260928-ddi-own-node-*`.
 
+The same guard also protects minor nodes, property updates and LDI
+identifiers. Three checks cover it, each with an `OwnNode` for the root
+node: `create_minor_node` fails, `set_int` and `remove` fail with
+`PropError::NotOwnNode`, and `LdiIdent::from_dip` fails with `ENXIO`. None
+of them can panic without the guard: the kernel would create a minor node
+(of a node type no `devfsadm` rule knows), a property or an identifier on
+the root node, and the check would remove it again. On 28 September 2026
+all 49 checks (42 at attach and 7 LDI checks) passed on a fresh guest on
+Hephaistos (illumos `cda5b9a49f`), with no guard minor node under
+`/devices` and a clean `rem_drv`. The log is
+`logs/hephaistos/illumos-drm/20260928-loose-ends-ddi-rselftest.log` in the
+workspace.
+
 Apart from that DMA check, register access, PCI configuration space,
 interrupts and DMA need a device to bind to and are not covered by
 `rselftest`. They were checked against the gate source and the compiler
