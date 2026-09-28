@@ -87,7 +87,7 @@ pub use nvlist::{
     AllocPolicy, KmNoSleep, KmSleep, NvEncoding, NvList, NvListRef, NvPair, NvStrings, NvValue, PackedNvList,
 };
 pub use pci::{ClassCode, IdleSpeed, PciConfig};
-pub use prop::{PropBuf, PropError, PropString, PropStrings, Props};
+pub use prop::{PropBuf, PropError, PropString, PropStrings, Props, ReadOnly, ReadWrite};
 pub use regs::{AccessAttr, DataOrder, Endian, FaultMode, Reg, RegBlock, RegError, RegMap, RegValue, RepMode};
 pub use sync::{CondVar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Semaphore, WaitResult};
 pub use taskq::TaskQueue;
