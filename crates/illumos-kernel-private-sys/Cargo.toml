@@ -1,0 +1,24 @@
+[package]
+name = "illumos-kernel-private-sys"
+description = "Raw bindings to private illumos kernel interfaces, pinned to one gate commit (unstable, feature-gated)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+# The only way to use this crate. The name carries the gate commit the
+# declarations were written and checked against (illumos cda5b9a49f); a
+# consumer names it explicitly and so states which kernel it was built for.
+# Without it the crate is empty.
+unstable-gate-cda5b9a49f = []
+
+[dependencies]
+ddi-sys.workspace = true
+
+[package.metadata.kmod]
+# makespecvp lives in the specfs file system module, which the kernel loads
+# before the root file system is mounted; everything else is in genunix.
+depends = ["fs/specfs"]
+mapfiles = []

@@ -71,6 +71,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "illumos-kernel-private-sys"
+version = "0.0.1"
+dependencies = [
+ "ddi-sys",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

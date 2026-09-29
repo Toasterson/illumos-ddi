@@ -13,6 +13,14 @@
 //! crate that `ddi.mapfile` does not list are printed; they are what a
 //! driver linked with `-z defs` against that mapfile trips over, and the
 //! input for an upstream mapfile patch.
+//!
+//! The private tier (`illumos-kernel-private-sys`, [`PRIVATE_CRATES`]) has
+//! no manual pages by definition. Its items cite the gate source instead,
+//! with a first doc line of the form
+//! `` `name`. Private, `uts/common/os/fio.c:1362`. ``, and the lint checks
+//! that every item of that crate has such a line, that the cited file
+//! exists under `usr/src` of the gate and that the cited line mentions the
+//! name. A declaration therefore cannot point at a line that moved.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -330,7 +338,95 @@ pub fn run(args: &[String]) -> Result<(), String> {
             println!("  {}", chunk.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" "));
         }
     }
+    let (private_checked, private_errors) = check_private(&root, &gate)?;
+    println!("lint-man: {private_checked} private-tier gate citations checked, {private_errors} errors");
+    let errors = errors + private_errors;
     if errors > 0 { Err(format!("{errors} manual reference errors")) } else { Ok(()) }
+}
+
+/// The `-sys` crates of the private tier, whose items cite gate source
+/// lines instead of manual pages (`docs/DESIGN.md` section 4).
+pub const PRIVATE_CRATES: &[&str] = &["illumos-kernel-private-sys"];
+
+/// Splits a first doc line of the form
+/// `` /// `name`. Private, `path:line`. `` into the name, the path and the
+/// line number.
+fn private_reference(t: &str) -> Option<(&str, &str, usize)> {
+    let rest = t.strip_prefix("/// `")?;
+    let (name, rest) = rest.split_once("`. Private, `")?;
+    let (cite, _) = rest.split_once('`')?;
+    let (path, line) = cite.rsplit_once(':')?;
+    Some((name, path, line.parse().ok()?))
+}
+
+/// Checks every item of the private-tier crates: each public item needs a
+/// gate citation as its first doc line, and the cited line must exist and
+/// contain the item's name. Returns the number of citations checked and
+/// the number of errors.
+fn check_private(root: &Path, gate: &Path) -> Result<(usize, usize), String> {
+    let (mut checked, mut errors) = (0, 0);
+    for krate in PRIVATE_CRATES {
+        let src = root.join("crates").join(krate).join("src");
+        let mut files: Vec<PathBuf> = fs::read_dir(&src)
+            .map_err(|e| format!("{}: {e}", src.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
+            // The crate root holds the module list and the gate constant.
+            .filter(|p| p.file_name().and_then(|n| n.to_str()) != Some("lib.rs"))
+            .collect();
+        files.sort();
+        for f in files {
+            let text = fs::read_to_string(&f).map_err(|e| format!("{}: {e}", f.display()))?;
+            let rel = f.strip_prefix(root).unwrap_or(&f).display().to_string();
+            let mut first_doc: Option<(usize, String)> = None;
+            let mut prev_doc = false;
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim_start();
+                let is_doc = t.starts_with("///");
+                if is_doc && !prev_doc {
+                    first_doc = Some((i, t.to_string()));
+                }
+                prev_doc = is_doc;
+                if is_doc || t.starts_with("#[") || t.is_empty() {
+                    continue;
+                }
+                let doc = first_doc.take();
+                // Public items only; fields, `use` lines and assertions are
+                // not items of their own.
+                let Some(item) = t.strip_prefix("pub ").and_then(item_name) else { continue };
+                // A typedef name documents itself as an alias of the
+                // structure next to it, which carries the citation.
+                if doc.as_ref().is_some_and(|(_, d)| d.starts_with("/// The typedef name of")) {
+                    continue;
+                }
+                let Some((at, doc)) = doc else {
+                    errors += 1;
+                    eprintln!("{rel}:{}: {item} has no gate citation", i + 1);
+                    continue;
+                };
+                let Some((name, path, line)) = private_reference(&doc) else {
+                    errors += 1;
+                    eprintln!("{rel}:{}: {item}: first doc line is not \"`name`. Private, `path:line`.\"", at + 1);
+                    continue;
+                };
+                checked += 1;
+                let file = gate.join("usr/src").join(path);
+                let Ok(body) = fs::read_to_string(&file) else {
+                    errors += 1;
+                    eprintln!("{rel}:{}: {name}: {} does not exist in the gate", at + 1, file.display());
+                    continue;
+                };
+                let cited = body.lines().nth(line.saturating_sub(1)).unwrap_or("");
+                // A C name matches with or without the typedef suffix.
+                let bare = name.strip_suffix("_t").unwrap_or(name);
+                if line == 0 || !(cited.contains(name) || cited.contains(bare)) {
+                    errors += 1;
+                    eprintln!("{rel}:{}: {name}: {path}:{line} reads {cited:?}", at + 1);
+                }
+            }
+        }
+    }
+    Ok((checked, errors))
 }
 
 /// Splits a first doc line of the form `` /// `name(9F)`. Text. `` into
@@ -369,7 +465,7 @@ fn sys_sources(root: &Path) -> Result<Vec<PathBuf>, String> {
     for entry in fs::read_dir(&crates).map_err(|e| format!("{}: {e}", crates.display()))? {
         let dir = entry.map_err(|e| e.to_string())?.path();
         let Some(name) = dir.file_name().and_then(|s| s.to_str()) else { continue };
-        if !name.ends_with("-sys") {
+        if !name.ends_with("-sys") || PRIVATE_CRATES.contains(&name) {
             continue;
         }
         let src = dir.join("src");

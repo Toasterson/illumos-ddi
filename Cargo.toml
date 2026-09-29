@@ -10,6 +10,7 @@ members = [
   "crates/ddi-pcmcia-sys",
   "crates/ddi-gld-sys",
   "crates/ddi-ktest-sys",
+  "crates/illumos-kernel-private-sys",
   "crates/ddi",
   "examples/rnull",
   "examples/rselftest",
@@ -35,6 +36,7 @@ ddi-ksensor-sys = { path = "crates/ddi-ksensor-sys" }
 ddi-pcmcia-sys = { path = "crates/ddi-pcmcia-sys" }
 ddi-gld-sys = { path = "crates/ddi-gld-sys" }
 ddi-ktest-sys = { path = "crates/ddi-ktest-sys" }
+illumos-kernel-private-sys = { path = "crates/illumos-kernel-private-sys" }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 serde_json = "1"
 
