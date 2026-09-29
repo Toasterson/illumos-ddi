@@ -7,6 +7,7 @@ name = "ddi"
 version = "0.0.1"
 dependencies = [
  "ddi-sys",
+ "illumos-kernel-private-sys",
  "zerocopy",
 ]
 

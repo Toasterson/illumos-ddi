@@ -14,9 +14,14 @@ panic-handler = []
 # Provide a #[global_allocator] that always uses KM_SLEEP. Only for
 # prototypes: it is unsound to allocate this way from interrupt context.
 global-alloc-sleep = []
+# The safe wrappers over the private tier (illumos-kernel-private-sys),
+# checked against illumos gate cda5b9a49f and meaningful only on a kernel
+# of that commit; see docs/DESIGN.md section 4. Enables ddi::private.
+unstable-gate-cda5b9a49f = ["dep:illumos-kernel-private-sys", "illumos-kernel-private-sys/unstable-gate-cda5b9a49f"]
 
 [dependencies]
 ddi-sys.workspace = true
+illumos-kernel-private-sys = { workspace = true, optional = true }
 zerocopy.workspace = true
 
 [package.metadata.kmod]

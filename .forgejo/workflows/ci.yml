@@ -27,6 +27,9 @@ jobs:
           rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy --target x86_64-unknown-illumos
       - run: export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" PATH="$HOME/.cargo/bin:$PATH" SCCACHE_STARTUP_TIMEOUT=60 && cargo check --workspace --target x86_64-unknown-illumos
       - run: export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" PATH="$HOME/.cargo/bin:$PATH" SCCACHE_STARTUP_TIMEOUT=60 && cargo clippy --workspace --target x86_64-unknown-illumos -- -D warnings
+      # The private tier and its safe wrappers exist only with the feature
+      # that names their gate commit (docs/DESIGN.md section 4).
+      - run: export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" PATH="$HOME/.cargo/bin:$PATH" SCCACHE_STARTUP_TIMEOUT=60 && cargo clippy -p ddi -p illumos-kernel-private-sys --features ddi/unstable-gate-cda5b9a49f --target x86_64-unknown-illumos -- -D warnings
       - run: export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" PATH="$HOME/.cargo/bin:$PATH" SCCACHE_STARTUP_TIMEOUT=60 && cargo fmt --all -- --check
       # Host unit tests and the compile_fail doctests of the type rules
       # (docs/DESIGN.md section 5.12). Without the panic handler, which
