@@ -25,17 +25,17 @@
 //! `xtask kernel-check` covers the crate like every other `-sys` crate: the
 //! layout assertions against the running kernel's CTF data, and every
 //! symbol against the kernel's symbol table and the module list in
-//! `Cargo.toml` (`fs/specfs` for [`specfs::makespecvp`]).
+//! `Cargo.toml` (`fs/specfs` for `specfs::makespecvp`).
 //!
 //! What is here is what an ioctl needs to hand a kernel object to user
 //! space as a file descriptor of the calling process, the mechanism of
 //! `pipe(2)` (`uts/common/syscall/pipe.c`): a vnode for a device number of
-//! the calling driver ([`specfs::makespecvp`]), opened like `open(2)` would
-//! ([`vnode::fop_open`]), a file structure and descriptor ([`file::falloc`],
-//! [`file::setf`], [`file::f_setfd_or`]), the undo path
-//! ([`vnode::fop_close`], [`file::unfalloc`], [`vnode::vn_rele`]), and the
-//! way back from a descriptor to the vnode ([`file::getf`],
-//! [`file::releasef`]). The safe wrapper is `ddi::private::fd`, behind the
+//! the calling driver (`specfs::makespecvp`), opened like `open(2)` would
+//! (`vnode::fop_open`), a file structure and descriptor (`file::falloc`,
+//! `file::setf`, `file::f_setfd_or`), the undo path
+//! (`vnode::fop_close`, `file::unfalloc`, `vnode::vn_rele`), and the
+//! way back from a descriptor to the vnode (`file::getf`,
+//! `file::releasef`). The safe wrapper is `ddi::private::fd`, behind the
 //! `ddi` crate feature of the same name.
 #![no_std]
 #![allow(non_camel_case_types, non_upper_case_globals, non_snake_case)]
