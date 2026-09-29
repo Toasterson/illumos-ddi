@@ -35,13 +35,16 @@
 //! `file::setf`, `file::f_setfd_or`), the undo path
 //! (`vnode::fop_close`, `file::unfalloc`, `vnode::vn_rele`), and the
 //! way back from a descriptor to the vnode (`file::getf`,
-//! `file::releasef`). The safe wrapper is `ddi::private::fd`, behind the
+//! `file::releasef`). `disp::servicing_interrupt` lets the safe layer
+//! refuse work that must not happen in interrupt context. The safe wrapper is `ddi::private::fd`, behind the
 //! `ddi` crate feature of the same name.
 #![no_std]
 #![allow(non_camel_case_types, non_upper_case_globals, non_snake_case)]
 #![deny(improper_ctypes, improper_ctypes_definitions)]
 #![warn(missing_docs)]
 
+#[cfg(feature = "unstable-gate-cda5b9a49f")]
+pub mod disp;
 #[cfg(feature = "unstable-gate-cda5b9a49f")]
 pub mod file;
 #[cfg(feature = "unstable-gate-cda5b9a49f")]

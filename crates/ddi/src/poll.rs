@@ -17,22 +17,51 @@
 //!   [`KBox`], so the handle may move freely.
 //! - Before its memory goes, the driver wakes the pollers with `POLLERR`
 //!   and calls `pollhead_clean(9F)`. [`PollHead`]'s `Drop` does both, so a
-//!   head cannot be freed while registered. `pollhead_clean(9F)` may only be
-//!   called from user or kernel context, so a `PollHead` must be dropped
-//!   there (from `close(9E)`, a task queue, or another thread-context entry
-//!   point), never from an interrupt handler.
-//! - A registered head must stay alive at least until the file it was
-//!   registered for is closed: the poll framework links the poller into the
-//!   head after `chpoll(9E)` has returned, while it holds the file open.
-//!   Keep the head in the per-file or per-object state that `close(9E)`
-//!   frees.
+//!   head cannot be freed while registered.
+//! - `pollhead_clean(9F)` may only be called from user or kernel context.
+//!   [`PollHead::release`] takes the [`Sleepable`] token; an implicit drop
+//!   in interrupt context is refused at run time where the private tier is
+//!   built in (`servicing_interrupt`): the head is leaked, with a warning,
+//!   rather than cleaned there ([`leaked_heads`] counts them).
+//! - The poll framework links the poller into the registered head after
+//!   `chpoll(9E)` has returned. The head must therefore outlive the call by
+//!   more than the call: [`CharDevice::chpoll`](crate::CharDevice::chpoll)
+//!   receives the instance as `&'s self` and a `PollRegistration<'s>`, and
+//!   [`PollRegistration::register`] only accepts a head borrowed for `'s`,
+//!   that is one the instance owns, which lives until detach, after every
+//!   file is closed. A head owned by something shorter-lived (a per-file or
+//!   per-object head) needs the `unsafe`
+//!   [`PollRegistration::register_unchecked`], whose caller guarantees that
+//!   the head is not dropped before the polled file's `close(9E)`. Nothing
+//!   at run time can see the window in the poll framework, so there is no
+//!   guard for that path (`docs/DESIGN.md` section 5.12).
 //! - No mutex that `chpoll` takes may be held across [`PollHead::wakeup`].
 //!   The types cannot express this; release such locks first.
 //! - [`PollHead::wakeup`] may be called from any context, interrupt
 //!   handlers included.
+//!
+//! A head that is not borrowed from the instance cannot be registered in
+//! safe code:
+//!
+//! ```compile_fail,E0597
+//! fn chpoll_local<'s>(reg: &mut ddi::PollRegistration<'s>, ctx: &ddi::Sleepable) {
+//!     let head = ddi::PollHead::new(ctx);
+//!     reg.register(&head);
+//! }
+//! ```
+//!
+//! A head borrowed for the registration's lifetime can:
+//!
+//! ```no_run
+//! fn chpoll_owned<'s>(head: &'s ddi::PollHead, reg: &mut ddi::PollRegistration<'s>) {
+//!     reg.register(head);
+//! }
+//! ```
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
+use core::mem::ManuallyDrop;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::context::Sleepable;
 use crate::error::Errno;
@@ -63,6 +92,8 @@ impl PollEvents {
     pub const ERR: PollEvents = PollEvents(sys::POLLERR);
     /// `POLLHUP`: hung up; reported, never requested.
     pub const HUP: PollEvents = PollEvents(sys::POLLHUP);
+    /// `POLLNVAL`: the descriptor is invalid; reported, never requested.
+    pub const NVAL: PollEvents = PollEvents(sys::POLLNVAL);
     /// `POLLET`: edge-triggered polling was requested; the head must always
     /// be registered.
     pub const ET: PollEvents = PollEvents(sys::POLLET);
@@ -88,7 +119,7 @@ impl PollEvents {
 /// A `struct pollhead` in memory of its own, cleaned before it is freed.
 /// See the [module documentation](self).
 pub struct PollHead {
-    raw: KBox<UnsafeCell<sys::pollhead>>,
+    raw: ManuallyDrop<KBox<UnsafeCell<sys::pollhead>>>,
 }
 
 // SAFETY: the pollhead is only handed to pollwakeup(9F) and
@@ -106,12 +137,20 @@ impl PollHead {
 
     /// Allocates a zeroed pollhead with `KM_SLEEP`.
     pub fn new(ctx: &Sleepable) -> PollHead {
-        PollHead { raw: KBox::new(Self::zeroed(), ctx) }
+        PollHead { raw: ManuallyDrop::new(KBox::new(Self::zeroed(), ctx)) }
     }
 
     /// Allocates a zeroed pollhead with `KM_NOSLEEP`, from any context.
     pub fn try_new() -> Result<PollHead, Errno> {
-        Ok(PollHead { raw: KBox::try_new(Self::zeroed())? })
+        Ok(PollHead { raw: ManuallyDrop::new(KBox::try_new(Self::zeroed())?) })
+    }
+
+    /// Wakes the remaining pollers with `POLLERR` and removes them with
+    /// `pollhead_clean(9F)`, then frees the head, in thread context (the
+    /// token). This is what dropping does; the token makes the context a
+    /// type.
+    pub fn release(self, _ctx: &Sleepable) {
+        drop(self)
     }
 
     /// Wakes the pollers waiting for any of `events` with `pollwakeup(9F)`.
@@ -126,37 +165,81 @@ impl PollHead {
     }
 }
 
+/// Heads dropped in interrupt context and leaked rather than cleaned.
+static LEAKED: AtomicU64 = AtomicU64::new(0);
+
+/// Returns how many [`PollHead`]s were dropped in interrupt context and
+/// leaked instead of being cleaned there. Always 0 without the private
+/// tier, which provides the check.
+pub fn leaked_heads() -> u64 {
+    LEAKED.load(Ordering::Relaxed)
+}
+
+/// Reports whether the caller runs in interrupt context, where the private
+/// tier can tell; `false` otherwise.
+fn in_interrupt() -> bool {
+    #[cfg(feature = "unstable-gate-cda5b9a49f")]
+    {
+        // SAFETY: servicing_interrupt may be called from any context.
+        unsafe { illumos_kernel_private_sys::disp::servicing_interrupt() != 0 }
+    }
+    #[cfg(not(feature = "unstable-gate-cda5b9a49f"))]
+    {
+        false
+    }
+}
+
 impl Drop for PollHead {
     /// Wakes the remaining pollers with `POLLERR` and removes them with
     /// `pollhead_clean(9F)` before the memory is freed, as `chpoll(9E)`
-    /// asks. User or kernel context only.
+    /// asks. User or kernel context only; in interrupt context (detected
+    /// with the private tier) the head is leaked with a warning instead.
     fn drop(&mut self) {
+        if in_interrupt() {
+            LEAKED.fetch_add(1, Ordering::Relaxed);
+            crate::kwarn!("ddi::poll: a PollHead was dropped in interrupt context; leaking it");
+            // The box is not dropped: the pollhead stays valid for pollers.
+            return;
+        }
         // SAFETY: the pollhead is live; after pollhead_clean the kernel
-        // holds no reference to it and the box frees it.
+        // holds no reference to it, and the box is dropped once, here.
         unsafe {
             sys::pollwakeup(self.raw.get(), sys::POLLERR);
             sys::pollhead_clean(self.raw.get());
+            ManuallyDrop::drop(&mut self.raw);
         }
     }
 }
 
 /// Where [`CharDevice::chpoll`](crate::CharDevice::chpoll) registers its
 /// [`PollHead`]; the glue passes it to the kernel through `phpp` when the
-/// algorithm of `chpoll(9E)` needs one.
-pub struct PollRegistration<'a> {
+/// algorithm of `chpoll(9E)` needs one. `'s` is the lifetime of the
+/// instance the call borrows; see the [module documentation](self).
+pub struct PollRegistration<'s> {
     head: *mut sys::pollhead,
-    _call: PhantomData<&'a mut ()>,
+    _heads: PhantomData<&'s PollHead>,
 }
 
-impl PollRegistration<'_> {
+impl<'s> PollRegistration<'s> {
     pub(crate) fn new() -> Self {
-        PollRegistration { head: core::ptr::null_mut(), _call: PhantomData }
+        PollRegistration { head: core::ptr::null_mut(), _heads: PhantomData }
     }
 
-    /// Registers `head`. The head must stay alive until the polled file is
-    /// closed (see the [module documentation](self)); its `Drop` cleans it
-    /// in any case.
-    pub fn register(&mut self, head: &PollHead) {
+    /// Registers `head`, which the instance owns: it lives for `'s`, until
+    /// the device detaches, after every file is closed.
+    pub fn register(&mut self, head: &'s PollHead) {
+        self.head = head.as_raw();
+    }
+
+    /// Registers a head that does not live as long as the instance.
+    ///
+    /// # Safety
+    /// The head must not be dropped before `close(9E)` of the file being
+    /// polled: the poll framework links the poller into it after
+    /// `chpoll(9E)` has returned, holding the file open meanwhile. A head
+    /// kept in per-object state that only `close(9E)` of the object's own
+    /// minor frees satisfies this.
+    pub unsafe fn register_unchecked(&mut self, head: &PollHead) {
         self.head = head.as_raw();
     }
 

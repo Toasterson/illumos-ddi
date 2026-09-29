@@ -571,7 +571,51 @@ fn anonfd_tests(node: &OwnNode, arg: &IoctlArg<'_>, ctx: &Sleepable) -> Result<A
         Err(_) => check(false),
     }
     check(matches!(FileRef::get(-1, arg), Err(e) if e == Errno::EBADF));
+    // The PollHead guard: a head dropped in a soft interrupt is leaked,
+    // not cleaned there (pollhead_clean(9F) is for user and kernel context
+    // only); a head released with the token is cleaned. Without the guard
+    // the soft interrupt would call pollhead_clean on an unregistered head,
+    // which does not panic, so the check cannot panic either.
+    let before = ddi::poll::leaked_heads();
+    PollHead::new(ctx).release(ctx);
+    check(ddi::poll::leaked_heads() == before);
+    let dropped = match SoftInterrupt::add(
+        node,
+        SoftInterrupt::<HeadDropper>::DEFAULT_PRIORITY,
+        |pri| HeadDropper { head: Mutex::with_priority(Some(PollHead::new(ctx)), pri), done: AtomicBool::new(false) },
+        ctx,
+    ) {
+        Ok(si) => {
+            let _ = si.trigger();
+            let mut waited = 0;
+            while !si.state().done.load(Ordering::Acquire) && waited < 100 {
+                delay(Ticks::from_micros(10_000), ctx);
+                waited += 1;
+            }
+            si.state().done.load(Ordering::Acquire)
+        }
+        Err(_) => false,
+    };
+    check(dropped && ddi::poll::leaked_heads() == before + 1);
     Ok(res)
+}
+
+/// The state of the soft interrupt that drops a [`PollHead`].
+#[cfg(feature = "private-gate")]
+struct HeadDropper {
+    head: Mutex<Option<PollHead>>,
+    done: AtomicBool,
+}
+
+#[cfg(feature = "private-gate")]
+impl SoftInterruptHandler for HeadDropper {
+    fn handle(&self, _ctx: &Atomic) -> Claimed {
+        let h = self.head.lock().take();
+        let Some(h) = h else { return Claimed::No };
+        drop(h);
+        self.done.store(true, Ordering::Release);
+        Claimed::Yes
+    }
 }
 
 impl CharDevice for Instance {

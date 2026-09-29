@@ -231,7 +231,9 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
     /// `ops: [char, chpoll]` or `ops: [char, devmap, chpoll]`; with plain
     /// `[char]` the slot is `nochpoll`, and specfs then treats the device
     /// as always ready. Return the ready events (the glue masks them with
-    /// `events`) and register the object's [`PollHead`](crate::PollHead)
+    /// `events`, but always passes `POLLERR`, `POLLHUP` and `POLLNVAL`
+    /// through) and register a [`PollHead`](crate::PollHead) the instance
+    /// owns (see [`PollRegistration`] for heads it does not own)
     /// in `reg` whenever nothing may be ready yet, that is always unless
     /// the returned set is known to be complete; the glue hands the head to
     /// the kernel exactly when `chpoll(9E)` requires it (nothing ready and
@@ -239,12 +241,12 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
     /// with `EINVAL` if it is required and none was registered, since the
     /// poller could otherwise never be woken. The call comes from `poll(2)`
     /// in the context of the polling process and must not block.
-    fn chpoll(
-        &self,
+    fn chpoll<'s>(
+        &'s self,
         _minor: Minor,
         _events: PollEvents,
         _any_yet: bool,
-        _reg: &mut PollRegistration<'_>,
+        _reg: &mut PollRegistration<'s>,
     ) -> Result<PollEvents, Errno> {
         Err(Errno::ENXIO)
     }
@@ -739,7 +741,10 @@ pub mod glue {
         let mut reg = PollRegistration::new();
         match inst.chpoll(minor, events, anyyet != 0, &mut reg) {
             Ok(ready) => {
-                let revents = ready.intersection(events);
+                // POLLERR, POLLHUP and POLLNVAL are reported whether asked
+                // for or not, as poll(2) specifies.
+                let always = PollEvents::ERR.union(PollEvents::HUP).union(PollEvents::NVAL);
+                let revents = ready.intersection(events.union(always));
                 let need_head = (revents.is_empty() && anyyet == 0) || events.intersects(PollEvents::ET);
                 if need_head {
                     if reg.raw().is_null() {
