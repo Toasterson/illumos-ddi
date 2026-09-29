@@ -22,6 +22,7 @@ use crate::cred::Cred;
 use crate::device::{DevInfo, Instance, Minor, OpenFlags, OpenType, OwnNode};
 use crate::error::{DdiError, Errno};
 use crate::ioctl::{DataModel, IoctlArg, IoctlCmd};
+use crate::poll::{PollEvents, PollRegistration};
 use crate::sys;
 use crate::uio::Uio;
 
@@ -205,6 +206,30 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
         _model: DataModel,
         _ctx: &Sleepable,
     ) -> Result<usize, Errno> {
+        Err(Errno::ENXIO)
+    }
+    /// Handles `chpoll(9E)`: reports which of `events` are ready on the
+    /// minor device.
+    ///
+    /// The glue only calls this for a module declared with
+    /// `ops: [char, chpoll]` or `ops: [char, devmap, chpoll]`; with plain
+    /// `[char]` the slot is `nochpoll`, and specfs then treats the device
+    /// as always ready. Return the ready events (the glue masks them with
+    /// `events`) and register the object's [`PollHead`](crate::PollHead)
+    /// in `reg` whenever nothing may be ready yet, that is always unless
+    /// the returned set is known to be complete; the glue hands the head to
+    /// the kernel exactly when `chpoll(9E)` requires it (nothing ready and
+    /// `any_yet` false, or [`PollEvents::ET`] requested) and fails the call
+    /// with `EINVAL` if it is required and none was registered, since the
+    /// poller could otherwise never be woken. The call comes from `poll(2)`
+    /// in the context of the polling process and must not block.
+    fn chpoll(
+        &self,
+        _minor: Minor,
+        _events: PollEvents,
+        _any_yet: bool,
+        _reg: &mut PollRegistration<'_>,
+    ) -> Result<PollEvents, Errno> {
         Err(Errno::ENXIO)
     }
 }
@@ -634,6 +659,43 @@ pub mod glue {
         }
     }
 
+    /// The `chpoll(9E)` entry point for a [`CharDevice`], installed by the
+    /// `ops: [char, chpoll]` and `ops: [char, devmap, chpoll]` forms of
+    /// [`module!`](crate::module!). Implements the algorithm of the manual
+    /// around [`CharDevice::chpoll`].
+    pub unsafe extern "C" fn chpoll<D: ModuleDef>(
+        dev: sys::dev_t,
+        events: sys::c_short,
+        anyyet: sys::c_int,
+        reventsp: *mut sys::c_short,
+        phpp: *mut *mut sys::pollhead,
+    ) -> sys::c_int
+    where
+        D::Instance: CharDevice,
+    {
+        let Some((minor, inst)) = (unsafe { D::state().instance_for_dev(dev) }) else { return sys::errno::ENXIO };
+        if reventsp.is_null() || phpp.is_null() {
+            return sys::errno::EINVAL;
+        }
+        let events = PollEvents(events);
+        let mut reg = PollRegistration::new();
+        match inst.chpoll(minor, events, anyyet != 0, &mut reg) {
+            Ok(ready) => {
+                let revents = ready.intersection(events);
+                let need_head = (revents.is_empty() && anyyet == 0) || events.intersects(PollEvents::ET);
+                if need_head {
+                    if reg.raw().is_null() {
+                        return sys::errno::EINVAL;
+                    }
+                    unsafe { *phpp = reg.raw() };
+                }
+                unsafe { *reventsp = revents.0 };
+                0
+            }
+            Err(e) => e.get(),
+        }
+    }
+
     /// A stub with the signature of `identify(9E)` and `probe(9E)` that
     /// returns 0, standing in for the kernel's `nulldev`.
     pub unsafe extern "C" fn nulldev_dip(_dip: sys::dev_info_t) -> sys::c_int {
@@ -741,7 +803,10 @@ pub mod glue {
 /// `[char, devmap]` does the same and also makes the device mappable
 /// through the devmap framework: [`CharDevice::devmap`] becomes the
 /// `devmap(9E)` entry point, `ddi_devmap_segmap(9F)` the `segmap(9E)` entry
-/// point, and `D_DEVMAP` is set in `cb_flag`. An empty list produces a
+/// point, and `D_DEVMAP` is set in `cb_flag`. Adding `chpoll`
+/// (`[char, chpoll]`, `[char, devmap, chpoll]`) installs
+/// [`CharDevice::chpoll`] as the `chpoll(9E)` entry point instead of
+/// `nochpoll`, so that `poll(2)` waits on the device. An empty list produces a
 /// module whose `cb_ops` slots all return `ENXIO`.
 ///
 /// ```ignore
@@ -762,7 +827,34 @@ macro_rules! module {
             ioctl: Some($crate::module::glue::ioctl::<$drv>),
             devmap: Some($crate::module::glue::nodev_devmap),
             segmap: Some($crate::module::glue::nodev_segmap),
+            chpoll: Some($crate::sys::nochpoll),
             flag: 0);
+    };
+    (driver: $drv:ty, ops: [char, chpoll] $(,)?) => {
+        $crate::module!(@common $drv);
+        $crate::module!(@cb_ops $drv,
+            open: Some($crate::module::glue::open::<$drv>),
+            close: Some($crate::module::glue::close::<$drv>),
+            read: Some($crate::module::glue::read::<$drv>),
+            write: Some($crate::module::glue::write::<$drv>),
+            ioctl: Some($crate::module::glue::ioctl::<$drv>),
+            devmap: Some($crate::module::glue::nodev_devmap),
+            segmap: Some($crate::module::glue::nodev_segmap),
+            chpoll: Some($crate::module::glue::chpoll::<$drv>),
+            flag: 0);
+    };
+    (driver: $drv:ty, ops: [char, devmap, chpoll] $(,)?) => {
+        $crate::module!(@common $drv);
+        $crate::module!(@cb_ops $drv,
+            open: Some($crate::module::glue::open::<$drv>),
+            close: Some($crate::module::glue::close::<$drv>),
+            read: Some($crate::module::glue::read::<$drv>),
+            write: Some($crate::module::glue::write::<$drv>),
+            ioctl: Some($crate::module::glue::ioctl::<$drv>),
+            devmap: Some($crate::module::glue::devmap::<$drv>),
+            segmap: Some($crate::sys::ddi_devmap_segmap),
+            chpoll: Some($crate::module::glue::chpoll::<$drv>),
+            flag: $crate::sys::D_DEVMAP);
     };
     (driver: $drv:ty, ops: [char, devmap] $(,)?) => {
         $crate::module!(@common $drv);
@@ -774,6 +866,7 @@ macro_rules! module {
             ioctl: Some($crate::module::glue::ioctl::<$drv>),
             devmap: Some($crate::module::glue::devmap::<$drv>),
             segmap: Some($crate::sys::ddi_devmap_segmap),
+            chpoll: Some($crate::sys::nochpoll),
             flag: $crate::sys::D_DEVMAP);
     };
     (driver: $drv:ty, ops: [] $(,)?) => {
@@ -786,10 +879,11 @@ macro_rules! module {
             ioctl: Some($crate::module::glue::nodev_ioctl),
             devmap: Some($crate::module::glue::nodev_devmap),
             segmap: Some($crate::module::glue::nodev_segmap),
+            chpoll: Some($crate::sys::nochpoll),
             flag: 0);
     };
     (@cb_ops $drv:ty, open: $open:expr, close: $close:expr, read: $read:expr, write: $write:expr, ioctl: $ioctl:expr,
-     devmap: $devmap:expr, segmap: $segmap:expr, flag: $flag:expr) => {
+     devmap: $devmap:expr, segmap: $segmap:expr, chpoll: $chpoll:expr, flag: $flag:expr) => {
         static __DDI_CB_OPS: $crate::module::StaticCell<$crate::sys::cb_ops> =
             $crate::module::StaticCell::new($crate::sys::cb_ops {
                 cb_open: $open,
@@ -803,7 +897,7 @@ macro_rules! module {
                 cb_devmap: $devmap,
                 cb_mmap: Some($crate::module::glue::nodev_mmap),
                 cb_segmap: $segmap,
-                cb_chpoll: Some($crate::sys::nochpoll),
+                cb_chpoll: $chpoll,
                 cb_prop_op: Some($crate::sys::ddi_prop_op),
                 cb_str: ::core::ptr::null_mut(),
                 cb_flag: $crate::sys::D_MP | $crate::sys::D_64BIT | $crate::sys::D_NEW | $flag,

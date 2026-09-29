@@ -60,6 +60,9 @@ pub mod log;
 pub mod module;
 pub mod nvlist;
 pub mod pci;
+pub mod poll;
+#[cfg(feature = "unstable-gate-cda5b9a49f")]
+pub mod private;
 pub mod prop;
 pub mod regs;
 pub mod sync;
@@ -87,6 +90,7 @@ pub use nvlist::{
     AllocPolicy, KmNoSleep, KmSleep, NvEncoding, NvList, NvListRef, NvPair, NvStrings, NvValue, PackedNvList,
 };
 pub use pci::{ClassCode, IdleSpeed, PciConfig};
+pub use poll::{PollEvents, PollHead, PollRegistration};
 pub use prop::{PropBuf, PropError, PropString, PropStrings, Props, ReadOnly, ReadWrite};
 pub use regs::{AccessAttr, DataOrder, Endian, FaultMode, Reg, RegBlock, RegError, RegMap, RegValue, RepMode};
 pub use sync::{CondVar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Semaphore, WaitResult};
@@ -111,6 +115,7 @@ pub mod prelude {
     pub use crate::module::{CharDevice, DevmapHandle, Driver};
     pub use crate::nvlist::{NvEncoding, NvList, NvListRef};
     pub use crate::pci::PciConfig;
+    pub use crate::poll::{PollEvents, PollHead, PollRegistration};
     pub use crate::prop::{PropBuf, PropError, PropString, PropStrings, Props};
     pub use crate::regs::{AccessAttr, DataOrder, Endian, FaultMode, Reg, RegBlock, RegError, RegMap, RepMode};
     pub use crate::sync::{
