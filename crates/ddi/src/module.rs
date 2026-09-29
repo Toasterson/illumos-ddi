@@ -175,8 +175,9 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
     /// and describes the memory behind it.
     ///
     /// The glue only calls this for a module declared with
-    /// `ops: [char, devmap]`; that form installs `ddi_devmap_segmap(9F)` as
-    /// the `segmap(9E)` entry point and sets `D_DEVMAP`, so `mmap(2)` on the
+    /// `ops: [char, devmap]`; that form installs a `segmap(9E)` entry point
+    /// that runs [`CharDevice::segmap_check`] and then
+    /// `ddi_devmap_segmap(9F)`, and sets `D_DEVMAP`, so `mmap(2)` on the
     /// device runs `devmap_setup(9F)`, which calls this method once for each
     /// piece of the requested range. `off` is the user offset at which the
     /// piece begins and `len` the length that is still to be mapped. The
@@ -208,6 +209,21 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
     ) -> Result<usize, Errno> {
         Err(Errno::ENXIO)
     }
+    /// Checks an `mmap(2)` of the minor device before the devmap framework
+    /// creates the mapping, from the `segmap(9E)` entry point that
+    /// `ops: [char, devmap]` installs (it then calls
+    /// `ddi_devmap_segmap(9F)`). `req` holds the offset, length,
+    /// protections and flags of the request (whether it is shared), which
+    /// [`CharDevice::devmap`] does not see.
+    ///
+    /// Refuse here what must be refused: a `devmap_map(9E)` callback that
+    /// fails leaves the new segment in the caller's address space until it
+    /// exits (`devmap_setup` in `vm/seg_dev.c` frees the handles but does
+    /// not unmap), which keeps the file mapped, and so open, until then.
+    /// The default allows everything.
+    fn segmap_check(&self, _minor: Minor, _req: &MapRequest, _ctx: &Sleepable) -> Result<(), Errno> {
+        Ok(())
+    }
     /// Handles `chpoll(9E)`: reports which of `events` are ready on the
     /// minor device.
     ///
@@ -231,6 +247,36 @@ pub trait CharDevice: Sized + Send + Sync + 'static {
         _reg: &mut PollRegistration<'_>,
     ) -> Result<PollEvents, Errno> {
         Err(Errno::ENXIO)
+    }
+}
+
+/// An `mmap(2)` request as `segmap(9E)` receives it; see
+/// [`CharDevice::segmap_check`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapRequest {
+    /// The offset into the device.
+    pub off: u64,
+    /// The length in bytes, as the caller gave it.
+    pub len: usize,
+    /// The requested protections (`PROT_*`).
+    pub prot: u32,
+    /// The protections the file's mode allows.
+    pub maxprot: u32,
+    /// The `mmap(2)` flags (`MAP_SHARED`, `MAP_PRIVATE`, `MAP_FIXED`, ...).
+    pub flags: u32,
+}
+
+impl MapRequest {
+    /// `MAP_TYPE`, the mask of the sharing type.
+    const MAP_TYPE: u32 = 0xf;
+    /// `MAP_SHARED`.
+    const MAP_SHARED: u32 = 1;
+
+    /// Reports whether the mapping is shared (`MAP_SHARED`); the devmap
+    /// framework maps device memory itself, so a private (copy-on-write)
+    /// mapping of it is rarely meaningful.
+    pub fn is_shared(&self) -> bool {
+        self.flags & Self::MAP_TYPE == Self::MAP_SHARED
     }
 }
 
@@ -708,6 +754,34 @@ pub mod glue {
         }
     }
 
+    /// The `segmap(9E)` entry point of `ops: [char, devmap]`: runs
+    /// [`CharDevice::segmap_check`], then `ddi_devmap_segmap(9F)`.
+    #[allow(clippy::too_many_arguments, reason = "the shape of segmap(9E)")]
+    pub unsafe extern "C" fn segmap<D: ModuleDef>(
+        dev: sys::dev_t,
+        off: sys::off_t,
+        asp: *mut sys::addrspace,
+        addrp: *mut sys::caddr_t,
+        len: sys::off_t,
+        prot: sys::c_uint,
+        maxprot: sys::c_uint,
+        flags: sys::c_uint,
+        credp: *mut sys::cred_t,
+    ) -> sys::c_int
+    where
+        D::Instance: CharDevice,
+    {
+        let Some((minor, inst)) = (unsafe { D::state().instance_for_dev(dev) }) else { return sys::errno::ENXIO };
+        let (Ok(uoff), Ok(ulen)) = (u64::try_from(off), usize::try_from(len)) else { return sys::errno::EINVAL };
+        // segmap(9E) is called from mmap(2), in the mapping process.
+        let ctx = unsafe { Sleepable::assume() };
+        let req = MapRequest { off: uoff, len: ulen, prot, maxprot, flags };
+        if let Err(e) = inst.segmap_check(minor, &req, &ctx) {
+            return e.get();
+        }
+        unsafe { sys::ddi_devmap_segmap(dev, off, asp, addrp, len, prot, maxprot, flags, credp) }
+    }
+
     /// A stub with the signature of `identify(9E)` and `probe(9E)` that
     /// returns 0, standing in for the kernel's `nulldev`.
     pub unsafe extern "C" fn nulldev_dip(_dip: sys::dev_info_t) -> sys::c_int {
@@ -814,8 +888,9 @@ pub mod glue {
 /// implements. `[char]` wires the [`CharDevice`] methods into `cb_ops`;
 /// `[char, devmap]` does the same and also makes the device mappable
 /// through the devmap framework: [`CharDevice::devmap`] becomes the
-/// `devmap(9E)` entry point, `ddi_devmap_segmap(9F)` the `segmap(9E)` entry
-/// point, and `D_DEVMAP` is set in `cb_flag`. Adding `chpoll`
+/// `devmap(9E)` entry point, glue that runs [`CharDevice::segmap_check`]
+/// and then `ddi_devmap_segmap(9F)` the `segmap(9E)` entry point, and
+/// `D_DEVMAP` is set in `cb_flag`. Adding `chpoll`
 /// (`[char, chpoll]`, `[char, devmap, chpoll]`) installs
 /// [`CharDevice::chpoll`] as the `chpoll(9E)` entry point instead of
 /// `nochpoll`, so that `poll(2)` waits on the device. An empty list produces a
@@ -864,7 +939,7 @@ macro_rules! module {
             write: Some($crate::module::glue::write::<$drv>),
             ioctl: Some($crate::module::glue::ioctl::<$drv>),
             devmap: Some($crate::module::glue::devmap::<$drv>),
-            segmap: Some($crate::sys::ddi_devmap_segmap),
+            segmap: Some($crate::module::glue::segmap::<$drv>),
             chpoll: Some($crate::module::glue::chpoll::<$drv>),
             flag: $crate::sys::D_DEVMAP);
     };
@@ -877,7 +952,7 @@ macro_rules! module {
             write: Some($crate::module::glue::write::<$drv>),
             ioctl: Some($crate::module::glue::ioctl::<$drv>),
             devmap: Some($crate::module::glue::devmap::<$drv>),
-            segmap: Some($crate::sys::ddi_devmap_segmap),
+            segmap: Some($crate::module::glue::segmap::<$drv>),
             chpoll: Some($crate::sys::nochpoll),
             flag: $crate::sys::D_DEVMAP);
     };
