@@ -68,3 +68,13 @@ jobs:
           ld -ztype=kmod -z allextract
           target/x86_64-illumos-kmod/release/rselftest.a -o target/rselftest &&
           elfdump -d target/rselftest | grep SUNW_KMOD
+      # rselftest with the private tier (its RSELFTEST_IOC_ANONFD checks):
+      # makespecvp lives in the specfs module, so the link names it.
+      - run: >
+          export PATH="$HOME/.cargo/bin:$PATH" && export SCCACHE_STARTUP_TIMEOUT=60 &&
+          cargo +nightly-2026-04-16 build -p rselftest --features private-gate --release
+          --target targets/x86_64-illumos-kmod.json
+          -Zjson-target-spec -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem &&
+          ld -ztype=kmod -N fs/specfs -z allextract
+          target/x86_64-illumos-kmod/release/rselftest.a -o target/rselftest-private &&
+          elfdump -d target/rselftest-private | grep NEEDED
