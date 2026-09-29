@@ -26,6 +26,17 @@
 //!   `IoctlArg` could not hide.
 //! - Only minor numbers of the calling driver can be opened: the device
 //!   number is built from `ddi_driver_major(9F)` of the driver's own node.
+//! - The new vnode gets the path of the caller's own file, the one the
+//!   ioctl was issued on, found with `specfind` for the device number the
+//!   glue records in the [`IoctlArg`]. `makespecvp` gives a vnode no path,
+//!   and the devmap framework's `segdev_create` cannot map a vnode whose
+//!   path is not visible in the caller's zone: it dereferences NULL (the
+//!   panic of 29 September 2026, `docs/DESIGN.md` section 5.12). An
+//!   argument without a device number (made with [`IoctlArg::new`]) or a
+//!   caller whose file has no visible vnode is refused with `EINVAL`, and
+//!   the `devmap(9E)` glue refuses to map a device that `specfind` cannot
+//!   find ([`mappable`]), which also covers a descriptor passed into
+//!   another zone.
 //! - [`NewFd::open`] calls the driver's own `open(9E)` for the minor, and
 //!   an abandoned [`NewFd`] calls its `close(9E)`, so the caller must not
 //!   hold a lock those entry points take.
@@ -41,8 +52,8 @@ use core::marker::PhantomData;
 use core::ptr::{self, NonNull};
 
 use illumos_kernel_private_sys::file::{self as pfile, FD_CLOEXEC, file};
-use illumos_kernel_private_sys::specfs::makespecvp;
-use illumos_kernel_private_sys::vnode::{VCHR, fop_close, fop_open, vn_rele, vnode};
+use illumos_kernel_private_sys::specfs::{makespecvp, specfind};
+use illumos_kernel_private_sys::vnode::{VCHR, fop_close, fop_open, vn_copypath, vn_rele, vnode};
 
 use crate::context::Sleepable;
 use crate::device::{DevInfo, Minor};
@@ -100,13 +111,28 @@ impl<'a> NewFd<'a> {
         _ctx: &Sleepable,
     ) -> Result<NewFd<'a>, Errno> {
         user_call(arg)?;
+        let caller = arg.dev().ok_or(Errno::EINVAL)?;
         let flag = sys::FREAD | if flags.write { sys::FWRITE } else { 0 };
         // SAFETY: the node is live (the caller got it from its own entry
         // point); the major number is the calling driver's.
         let devt = unsafe { sys::makedevice(sys::ddi_driver_major(dev.as_raw()), minor.0) };
+        // The caller's own file: a held vnode with a path visible in the
+        // caller's zone, or none.
+        // SAFETY: specfind may be called from user context and returns a
+        // held vnode or NULL.
+        let src = unsafe { specfind(caller, VCHR) };
+        if src.is_null() {
+            return Err(Errno::EINVAL);
+        }
         // SAFETY: makespecvp allocates with KM_SLEEP, which the token allows,
-        // and returns a vnode with one reference.
-        let mut vp = unsafe { makespecvp(devt, VCHR) };
+        // and returns a vnode with one reference. vn_copypath copies the
+        // path of the held `src`, which is released afterwards.
+        let mut vp = unsafe {
+            let vp = makespecvp(devt, VCHR);
+            vn_copypath(src, vp);
+            vn_rele(src);
+            vp
+        };
         // SAFETY: vp is a fresh specfs vnode; the credential is the calling
         // thread's, the one falloc records as well. On success vp may have
         // been replaced (a cloning open), and the reference moved with it.
@@ -175,6 +201,23 @@ impl Drop for NewFd<'_> {
             vn_rele(self.vp.as_ptr());
         }
     }
+}
+
+/// Reports whether the devmap framework can map device number `dev` for
+/// the calling process: whether `specfind` finds a vnode for it whose path
+/// is visible in the caller's zone. The `devmap(9E)` glue refuses the
+/// mapping otherwise (see the module documentation).
+pub(crate) fn mappable(dev: sys::dev_t) -> bool {
+    // SAFETY: specfind may be called from user context (devmap runs in
+    // mmap(2)); a vnode it returns is held and released at once.
+    unsafe {
+        let vp = specfind(dev, VCHR);
+        if vp.is_null() {
+            return false;
+        }
+        vn_rele(vp);
+    }
+    true
 }
 
 /// A descriptor of the calling process held for the duration of an ioctl

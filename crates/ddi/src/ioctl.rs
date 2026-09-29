@@ -57,16 +57,56 @@ pub enum DataModel {
 /// callers work: when another module calls through LDI, `mode` carries
 /// `FKIOCTL` and the copy functions know that `arg` is already a kernel
 /// address.
+///
+/// The argument the glue hands to [`CharDevice::ioctl`](crate::CharDevice::ioctl)
+/// also records the device number the ioctl was issued on, which only the
+/// glue can set. The file descriptors of `ddi::private::fd` need it, to
+/// give a new file the path of the caller's own file (`docs/DESIGN.md`
+/// section 5.12); an argument made with [`IoctlArg::new`] has none.
+///
+/// ```compile_fail,E0624
+/// // Only the glue can name the device an ioctl was issued on.
+/// fn forge() -> ddi::IoctlArg<'static> {
+///     ddi::IoctlArg::from_entry(0, 0, 0)
+/// }
+/// ```
+///
+/// ```no_run
+/// // An argument without a device number can be made anywhere.
+/// fn plain() -> ddi::IoctlArg<'static> {
+///     ddi::IoctlArg::new(0, 0)
+/// }
+/// ```
 pub struct IoctlArg<'a> {
     arg: isize,
     mode: i32,
+    /// The device number of the ioctl, `NODEV` if not from the glue.
+    #[cfg_attr(not(feature = "unstable-gate-cda5b9a49f"), allow(dead_code))]
+    dev: sys::dev_t,
     _life: PhantomData<&'a ()>,
 }
 
+/// `NODEV`, `(dev_t)-1`.
+const NODEV: sys::dev_t = sys::dev_t::MAX;
+
 impl<'a> IoctlArg<'a> {
-    /// Wraps the raw `arg` and `mode` values from the entry point.
+    /// Wraps the raw `arg` and `mode` values from the entry point. The
+    /// argument does not name a device; see the type documentation.
     pub fn new(arg: isize, mode: i32) -> IoctlArg<'a> {
-        IoctlArg { arg, mode, _life: PhantomData }
+        IoctlArg { arg, mode, dev: NODEV, _life: PhantomData }
+    }
+
+    /// The glue's constructor: `arg` and `mode` of `ioctl(9E)` and the
+    /// device number it was called with.
+    pub(crate) fn from_entry(arg: isize, mode: i32, dev: sys::dev_t) -> IoctlArg<'a> {
+        IoctlArg { arg, mode, dev, _life: PhantomData }
+    }
+
+    /// Returns the device number the ioctl was issued on, if the argument
+    /// came from the glue.
+    #[cfg_attr(not(feature = "unstable-gate-cda5b9a49f"), allow(dead_code))]
+    pub(crate) fn dev(&self) -> Option<sys::dev_t> {
+        (self.dev != NODEV).then_some(self.dev)
     }
 
     /// Returns the raw `arg` value, for commands that pass an integer rather

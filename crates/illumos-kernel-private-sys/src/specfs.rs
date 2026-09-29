@@ -14,4 +14,13 @@ unsafe extern "C" {
     /// interface and the clone driver make them. `spec_open` finds and holds
     /// the device node on the first open. Allocates with `KM_SLEEP`.
     pub fn makespecvp(dev: dev_t, type_: vtype_t) -> *mut vnode;
+    /// `specfind`. Private, `uts/common/sys/fs/snode.h:156`.
+    ///
+    /// Returns a held specfs vnode (not a common one) for device number
+    /// `dev` of type `type_` whose cached path is visible in the caller's
+    /// zone, or NULL. The devmap framework's `segdev_create` uses it for
+    /// every mapping of a character device and assumes it finds one: a
+    /// vnode without a visible path (`makespecvp` gives none) makes it
+    /// dereference NULL.
+    pub fn specfind(dev: dev_t, type_: vtype_t) -> *mut vnode;
 }

@@ -606,7 +606,7 @@ pub mod glue {
         let Some((minor, inst)) = (unsafe { D::state().instance_for_dev(dev) }) else { return sys::errno::ENXIO };
         let cred = unsafe { Cred::from_raw(credp) };
         let ctx = unsafe { Sleepable::assume() };
-        match inst.ioctl(minor, IoctlCmd(cmd), IoctlArg::new(arg, mode), &cred, &ctx) {
+        match inst.ioctl(minor, IoctlCmd(cmd), IoctlArg::from_entry(arg, mode, dev), &cred, &ctx) {
             Ok(rv) => {
                 if !rvalp.is_null() {
                     unsafe { *rvalp = rv };
@@ -631,6 +631,18 @@ pub mod glue {
         D::Instance: CharDevice,
     {
         let Some((minor, inst)) = (unsafe { D::state().instance_for_dev(dev) }) else { return sys::errno::ENXIO };
+        // The devmap framework's segdev_create looks the device's vnode up
+        // with specfind, which only finds vnodes whose path is visible in
+        // the caller's zone, and dereferences NULL otherwise (a descriptor
+        // passed into another zone, a vnode without a path). Refuse such a
+        // mapping here, before the framework gets there
+        // (docs/DESIGN.md section 5.12). The lookup is private, so only
+        // modules built with the private tier have the guard; only they can
+        // create pathless vnodes.
+        #[cfg(feature = "unstable-gate-cda5b9a49f")]
+        if !crate::private::fd::mappable(dev) {
+            return sys::errno::ENXIO;
+        }
         // A negative offset cannot name anything; offset_t is signed only
         // because it is shared with seek offsets.
         let Ok(off) = u64::try_from(off) else { return sys::errno::EINVAL };

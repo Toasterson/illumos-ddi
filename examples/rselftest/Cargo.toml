@@ -10,6 +10,11 @@ publish = false
 [lib]
 crate-type = ["staticlib"]
 
+[features]
+# Also test the private tier's file descriptors (ddi::private::fd) through
+# the RSELFTEST_IOC_ANONFD ioctl; needs a kernel of illumos gate cda5b9a49f.
+private-gate = ["ddi/unstable-gate-cda5b9a49f"]
+
 [dependencies]
 ddi.workspace = true
 zerocopy.workspace = true

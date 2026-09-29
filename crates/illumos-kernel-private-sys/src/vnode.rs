@@ -105,6 +105,12 @@ unsafe extern "C" {
         cr: *mut cred_t,
         ct: *mut caller_context,
     ) -> c_int;
+    /// `vn_copypath`. Private, `uts/common/sys/vnode.h:1368`.
+    ///
+    /// Gives `dst` the cached path of `src` (nothing if `src` has none),
+    /// as the open path does for a vnode that a cloning `VOP_OPEN`
+    /// replaced. Allocates with `KM_SLEEP`.
+    pub fn vn_copypath(src: *mut vnode, dst: *mut vnode);
     /// `vn_rele`. Private, `uts/common/sys/vnode.h:1338`.
     ///
     /// `VN_RELE`: drops one reference to the vnode, which is freed at zero.

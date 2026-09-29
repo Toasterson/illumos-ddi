@@ -46,6 +46,28 @@ pub const RSELFTEST_IOC_RESULTS: IoctlCmd = IoctlCmd::ior::<Results>(b'S', 1);
 /// `_IOR('S', 2, LdiResults)`.
 pub const RSELFTEST_IOC_LDI: IoctlCmd = IoctlCmd::ior::<LdiResults>(b'S', 2);
 
+/// Tests the file descriptors of the private tier and returns an
+/// [`AnonFdResults`]. Encoded as `_IOWR('S', 3, AnonFdResults)`. Fails with
+/// `ENOTSUP` unless the driver was built with the `private-gate` feature.
+pub const RSELFTEST_IOC_ANONFD: IoctlCmd = IoctlCmd::iowr::<AnonFdResults>(b'S', 3);
+
+/// The argument and results of [`RSELFTEST_IOC_ANONFD`].
+#[derive(Clone, Copy, Debug, Default, IntoBytes, Immutable, zerocopy::FromBytes)]
+#[repr(C)]
+pub struct AnonFdResults {
+    /// How many checks passed.
+    pub passed: u32,
+    /// How many checks failed.
+    pub failed: u32,
+    /// Bit `n` is set when check number `n` failed.
+    pub failed_mask: u64,
+    /// In: a descriptor of another device (`/dev/null`). Out: unchanged.
+    pub other_fd: i32,
+    /// Out: a new close-on-exec descriptor for the driver's own minor 0,
+    /// or -1; the caller checks and closes it.
+    pub fd: i32,
+}
+
 /// The results of the layered driver tests.
 #[derive(Clone, Copy, Debug, Default, IntoBytes, Immutable)]
 #[repr(C)]
@@ -487,6 +509,71 @@ fn ldi_tests(node: &OwnNode, cred: &Cred<'_>, ctx: &Sleepable) -> LdiResults {
     res
 }
 
+/// The checks of `ddi::private::fd`, from the ioctl path, where file
+/// descriptors can be made. The guard of `docs/DESIGN.md` section 5.12
+/// (the panic of 29 September 2026): an argument that does not come from
+/// the glue cannot make a descriptor. None of the checks can panic even if
+/// the guard were missing: the forged open would create a descriptor
+/// without a path, which nothing here maps, and it is closed at once.
+#[cfg(feature = "private-gate")]
+fn anonfd_tests(node: &OwnNode, arg: &IoctlArg<'_>, ctx: &Sleepable) -> Result<AnonFdResults> {
+    use ddi::private::fd::{FdFlags, FileRef, NewFd};
+    let mut res: AnonFdResults = arg.copy_in()?;
+    res.passed = 0;
+    res.failed = 0;
+    res.failed_mask = 0;
+    res.fd = -1;
+    let mut check = |ok: bool| {
+        if ok {
+            res.passed += 1;
+        } else {
+            res.failed_mask |= 1 << (res.passed + res.failed);
+            res.failed += 1;
+        }
+    };
+    let flags = FdFlags { write: false, cloexec: true };
+    let forged = IoctlArg::new(arg.raw(), arg.mode());
+    match NewFd::open(node, Minor(0), flags, &forged, ctx) {
+        Err(e) => check(e == Errno::EINVAL),
+        // The guard is missing: close the pathless descriptor again.
+        Ok(nfd) => {
+            drop(nfd);
+            check(false);
+        }
+    }
+    let fd = match NewFd::open(node, Minor(0), flags, arg, ctx) {
+        Ok(nfd) => {
+            check(true);
+            let fd = nfd.fd();
+            nfd.install();
+            fd
+        }
+        Err(_) => {
+            check(false);
+            -1
+        }
+    };
+    res.fd = fd;
+    if fd >= 0 {
+        match FileRef::get(fd, arg) {
+            Ok(f) => {
+                check(f.own_minor(node) == Some(Minor(0)));
+                check(!f.is_writable());
+            }
+            Err(_) => {
+                check(false);
+                check(false);
+            }
+        }
+    }
+    match FileRef::get(res.other_fd, arg) {
+        Ok(f) => check(f.own_minor(node).is_none()),
+        Err(_) => check(false),
+    }
+    check(matches!(FileRef::get(-1, arg), Err(e) if e == Errno::EBADF));
+    Ok(res)
+}
+
 impl CharDevice for Instance {
     fn open(
         &self,
@@ -521,6 +608,19 @@ impl CharDevice for Instance {
                 let out = Results { periodic_ticks: ticks, ..self.results };
                 arg.copy_out(&out)?;
                 Ok(0)
+            }
+            RSELFTEST_IOC_ANONFD => {
+                #[cfg(feature = "private-gate")]
+                {
+                    let res = anonfd_tests(&self.node, &arg, ctx)?;
+                    self.node.note(format_args!("private fd tests: {} passed, {} failed", res.passed, res.failed));
+                    // If this copy fails, the descriptor stays open in the
+                    // process, which a test driver may leave to its exit.
+                    arg.copy_out(&res)?;
+                    Ok(0)
+                }
+                #[cfg(not(feature = "private-gate"))]
+                Err(Errno::ENOTSUP)
             }
             RSELFTEST_IOC_LDI => {
                 let res = ldi_tests(&self.node, cred, ctx);
