@@ -35,7 +35,7 @@
 //!   argument without a device number (made with [`IoctlArg::new`]) or a
 //!   caller whose file has no visible vnode is refused with `EINVAL`, and
 //!   the `devmap(9E)` glue refuses to map a device that `specfind` cannot
-//!   find ([`mappable`]), which also covers a descriptor passed into
+//!   find (`mappable`), which also covers a descriptor passed into
 //!   another zone.
 //! - [`NewFd::open`] calls the driver's own `open(9E)` for the minor, and
 //!   an abandoned [`NewFd`] calls its `close(9E)`, so the caller must not

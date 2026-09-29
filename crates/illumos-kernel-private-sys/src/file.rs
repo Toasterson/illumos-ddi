@@ -46,7 +46,7 @@ pub struct file {
     /// The open file description lock.
     pub f_filock: *mut filock,
 }
-/// The typedef name of [`file`].
+/// The typedef name of [`file`](struct@file).
 pub type file_t = file;
 
 const _: () = assert!(core::mem::size_of::<file>() == 64);
