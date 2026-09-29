@@ -58,6 +58,16 @@ interface, `ddi-scsa-sys` the SCSI target and host adapter interfaces,
 and the kernel test framework. Each crate records the module it needs, so
 the link step can add the `-N` flag.
 
+`crates/illumos-kernel-private-sys` is the private tier: kernel interfaces
+without a manual page, today the file descriptor functions (`falloc`,
+`setf`, `getf`, ...) and the specfs and vnode calls a driver needs to hand
+one of its own minor numbers to user space as a file descriptor from an
+ioctl. The declarations were checked against one gate commit, and the
+crate is empty unless the feature naming it, `unstable-gate-cda5b9a49f`,
+is enabled; each item cites the gate source line instead of a manual
+page. The safe wrapper is `ddi::private::fd`, behind the `ddi` feature of
+the same name. Section 4 of `docs/DESIGN.md` gives the rules.
+
 `crates/ddi` is the layer a driver actually programs against. Its types
 carry the rules that the manual pages state in prose. A `Sleepable` token
 proves that the current context may block, and interrupt handlers receive
@@ -70,7 +80,8 @@ implementation.
 
 `examples/rnull` is a pseudo character device that discards writes, returns
 end of file on reads, and answers three ioctls. It is the template for a
-new driver. `examples/rselftest` is the in-kernel test of the safe layer.
+new driver. `examples/rselftest` is the in-kernel test of the safe layer;
+built with its `private-gate` feature it also tests `ddi::private::fd`.
 
 `xtask` builds a driver for the kernel target and links it with
 `ld -ztype=kmod`, collecting module dependencies from the crate graph. It
