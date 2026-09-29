@@ -906,7 +906,7 @@ The run on `oibldofgate` (illumos `cda5b9a49f`, OpenIndiana Hipster
 | `ddi-pcmcia-sys` | 68 of 84 | 175 of 201 | 83 of 83 | nested and anonymous structures without a CTF name |
 | `ddi-gld-sys` | 7 of 7 | 41 of 41 | 14 of 14 | `misc/gld` loaded for the check |
 | `ddi-ktest-sys` | not checked | not checked | 16 of 16 | `drv/ktest` is not installed on the image; its symbols were read from the packaged module |
-| `illumos-kernel-private-sys` | 2 of 2 | 21 of 21 | 12 of 12 | checked on 29 September 2026 on a disposable guest with the same kernel (before `servicing_interrupt` was added) |
+| `illumos-kernel-private-sys` | 2 of 2 | 21 of 21 | 13 of 13 | checked on 29 September 2026 on a disposable guest with the same kernel; `makespecvp` and `specfind` resolve from `specfs`, the rest from `genunix` |
 
 No size, no offset and no symbol disagreed with the kernel. Every count
 below the total is a type that CTF cannot name; those types are covered by
@@ -978,8 +978,8 @@ read-only descriptor of the driver's own minor that `FileRef` recognises,
 another device's descriptor is not recognised, a closed one is `EBADF`,
 a `PollHead` released with the token is cleaned, and one dropped in a
 soft interrupt is leaked rather than cleaned there. On 29 September 2026
-the first six (the `PollHead` checks came later) and the 42 attach and 7
-LDI checks passed on a disposable guest with illumos `cda5b9a49f`.
+all 57 checks (42 at attach, 7 LDI, 8 private) passed on a disposable
+guest with illumos `cda5b9a49f`.
 `rselftest_test` reports "not built" when the feature is off.
 
 `rselftest` is a pseudo driver that tests the safe layer from inside the
