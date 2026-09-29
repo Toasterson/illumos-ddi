@@ -265,7 +265,7 @@ checked against.
 | `ddi-ktest-sys` | `ktest.h` | `ktest_*(9F)` | `drv/ktest` | none | Volatile |
 | `ddi-blkdev-sys` | `blkdev.h` | none; the header and its comments are all there is | `drv/blkdev` | none | Planned. Committed by convention but undocumented, so the first job is to write `blkdev(9E)` upstream |
 | `ddi-cmlb-sys` | `cmlb.h` | none | `misc/cmlb` | none | Planned, private by omission |
-| `illumos-kernel-private-sys` | `virtio.h` (`io/virtio/`), `vnode.h`/`vfs.h`, `taskq.h` (raw), `zone.h`, items from `esunddi.h` | none | varies | none | Planned. Private, pinned to a gate commit, usable only with `--features unstable-gate-<hash>` |
+| `illumos-kernel-private-sys` | Since 29 September 2026: `file.h`/`fio.c` (`file_t`, `falloc`, `unfalloc`, `setf`, `getf`, `releasef`, `f_setfd_or`), `vnode.h` (the public prefix of `vnode_t`, `fop_open`, `fop_close`, `vn_copypath`, `vn_rele`), `snode.h` (`makespecvp`, `specfind`). Planned: `virtio.h` (`io/virtio/`), `taskq.h` (raw), `zone.h`, items from `esunddi.h` | none; items cite the gate source line | `fs/specfs` | none | Private, pinned to gate `cda5b9a49f`, empty unless built with `--features unstable-gate-cda5b9a49f` |
 
 The private tier has its first committed consumer. On 27 September 2026
 the owner decided to build a Rust DRM core and a Rust virtio-gpu driver on
@@ -282,6 +282,30 @@ virtio-gpu driver (R4), `gfx_private` for the console framebuffer
 hand-over, and `hat_*` for write-combining page pools, which only a later
 TTM-like layer needs. So `illumos-kernel-private-sys` moves ahead of the
 other planned crates.
+
+The crate exists since 29 September 2026 with what R2 needed: the file
+descriptor functions of `uts/common/os/fio.c`, a few vnode operations and
+the two specfs functions that give a driver's own minor number a file
+(illumos-drm `docs/anon-fd.md` records that design). Its rules:
+
+- The crate is empty unless the feature naming the gate commit is enabled
+  (`unstable-gate-cda5b9a49f`), so a consumer states which kernel it was
+  built for. Moving to another gate commit means re-reading every cited
+  line, running `xtask kernel-check` against that kernel, and renaming the
+  feature.
+- The first doc line of every item cites the gate file and line that
+  define it, `` `name`. Private, `uts/common/os/fio.c:1362`. ``, instead of
+  a manual page. `xtask lint-man --gate` checks each citation against the
+  checkout: the file must exist and the cited line must name the item.
+  The manual page checks skip the crate (`PRIVATE_CRATES` in
+  `xtask/src/lint_man.rs`).
+- `xtask kernel-check` covers it like every other `-sys` crate: the
+  layout assertions (`file_t` in full, the public prefix of `vnode_t`
+  field by field, `caller_context_t`) and every symbol, which must
+  resolve from `genunix`, `unix` or `fs/specfs`.
+- Safe wrappers live in the `ddi` crate under `ddi::private`, behind the
+  `ddi` feature of the same name. A Committed crate never declares a
+  private symbol.
 
 The earlier plan had separate crates for UFM, PCI, LDI and STREAMS and
 Cargo features for registers, interrupts, DMA and fault management inside
@@ -413,8 +437,15 @@ in illumos-drm uses this for its per-file authentication and master state.
 
 A driver whose memory user processes map with `mmap(2)` declares
 `ops: [char, devmap]` and implements `devmap`. That form installs the
-glue as `devmap(9E)`, `ddi_devmap_segmap(9F)` as `segmap(9E)`, and sets
-`D_DEVMAP`, so every `mmap(2)` goes through `devmap_setup(9F)`. The method
+glue as `devmap(9E)`, glue that runs `CharDevice::segmap_check` and then
+`ddi_devmap_segmap(9F)` as `segmap(9E)`, and sets `D_DEVMAP`, so every
+`mmap(2)` goes through `devmap_setup(9F)`. `segmap_check` sees the
+request's offset, length, protections and flags (a `MapRequest`), which
+`devmap(9E)` does not, and is the place to refuse a mapping: when a
+`devmap_map(9E)` callback refuses, `devmap_setup` frees the handles but
+leaves the new segment in the address space until the process exits,
+which keeps the device mapped and its file open (found by illumos-drm's
+R2 run on 29 September 2026). The method
 receives the minor number, the mapping handle as a `DevmapHandle` that
 lives only for the call, the user offset, the remaining length and the
 caller's data model; it describes the memory with `devmap_umem_setup(9F)`
@@ -429,6 +460,18 @@ reference taken in `devmap` needs another way back. The default fails
 with `ENXIO`, and `[char]` keeps the `nodev` stubs, so existing drivers
 are unchanged. The DRM core in illumos-drm uses this for GEM object
 mappings.
+
+A driver whose devices `poll(2)` waits on declares `chpoll` in the list
+(`[char, chpoll]` or `[char, devmap, chpoll]`) and implements
+`CharDevice::chpoll`, which returns the ready events and registers a
+`PollHead` in the `PollRegistration` it receives; the glue hands the head
+to the kernel exactly when `chpoll(9E)` requires it and fails with
+`EINVAL` if a head is required and none was registered. `PollHead` keeps
+its `pollhead` in a box of its own, so it never moves, wakes pollers with
+`pollwakeup(9F)` from any context, and on drop wakes them with `POLLERR`
+and calls `pollhead_clean(9F)`, so a head cannot be freed while pollers
+are registered on it. Without `chpoll` the slot is `nochpoll`, and specfs
+treats the device as always ready.
 
 ### 5.3 Allocation context is a type, not a flag
 
@@ -583,6 +626,11 @@ impl IoctlArg<'_> {
     pub fn model(&self) -> DataModel;                                     // ddi_model_convert_from
 }
 ```
+
+The `IoctlArg` the glue passes also records the device number the ioctl
+was issued on. Only the glue can set it; `IoctlArg::new` makes an
+argument without one. `ddi::private::fd` needs it to give a new file
+descriptor the path of the caller's own file (section 5.12).
 
 `IoctlCmd` is a newtype around the command number. Drivers define their
 commands with `IoctlCmd::io`, `IoctlCmd::ior::<T>`, `IoctlCmd::iow::<T>`
@@ -751,6 +799,7 @@ Panics prevented:
 | Date | Symptom | Root cause | Type rule | Guard | Tests | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | 2026-09-28 | `BAD TRAP: type=e (#pf Page fault)`, NULL pointer dereference at `pc=0` in `ddi_dma_addr_bind_handle`, at the first bind (illumos `cda5b9a49f`) | A pseudo driver allocated its DMA handles against `ddi_root_node(9F)`, not its own node. Rootnex accepts the root as its own requester, and the bind then calls the root node's `devi_bus_dma_bindfunc`, which is never filled because the root has no parent. | `DmaHandle::new` and `try_new` take `&OwnNode`, which only the attach glue creates and which is neither `Copy` nor `Clone`; a foreign node needs `unsafe` `OwnNode::from_raw`. `Interrupts::alloc`, `RegMap::map`, `RegBlock::map` and `PciConfig::setup`, which dereference the root node's missing parent, follow the same rule. | Before `ddi_dma_alloc_handle`, `DmaError::NotOwnNode` (`ENXIO`) for a node without a parent or bound to another driver than the one attached; the other constructors refuse the same nodes. | `compile_fail` doctests on `OwnNode` (a `DevInfo` for DMA, E0308; copy, E0507; clone, E0277; `from_raw` without `unsafe`, E0133); `rselftest` checks "dma root node refused by guard", "dma other driver's node refused by guard", "dma own pseudo node is BadAttr" | Workspace note `notes/illumos-drm-dma-panic-20260928.md`; illumos-drm pull request 3 |
+| 2026-09-29 | `BAD TRAP: type=e (#pf Page fault)`, NULL pointer dereference at `addr=0x10` in `segdev_create+0xe4`, on the first `mmap(2)` of a dma-buf descriptor (illumos `cda5b9a49f`) | `ddi::private::fd::NewFd::open` made the descriptor's vnode with `makespecvp`, which gives it no path (`v_path` is `vn_vpath_empty`). `segdev_create` looks the mapped device's vnode up with `specfind`, which only returns vnodes whose path is visible in the caller's zone, and dereferences the NULL it got (`VTOCVP(sdp->vp)`). The same happens for any devmap driver when a descriptor is passed into another zone and mapped there. | `IoctlArg` records the device number of the ioctl, and only the glue can set it (`IoctlArg::from_entry` is crate-private); `NewFd::open` finds the caller's own file with `specfind` for that number and copies its path to the new vnode (`vn_copypath`). | `NewFd::open` refuses (`EINVAL`) an argument made with `IoctlArg::new` and a caller whose file has no visible vnode; with the private tier, the `devmap(9E)` glue refuses (`ENXIO`) a mapping of a device `specfind` cannot find, before the framework dereferences it. | `compile_fail` doctest on `IoctlArg` (`from_entry` outside the crate, E0624, with a compiling twin for `new`); `rselftest` built with `private-gate`, ioctl `RSELFTEST_IOC_ANONFD`: "a forged argument is refused" and the descriptor it makes is the driver's own minor, close-on-exec, read-only; illumos-drm's R2 test maps dma-bufs | Workspace note `notes/illumos-drm-segdev-panic-20260929.md`; dump on Hephaistos `~/illumos-drm-test/20260928/dumps/r2-segdev-20260929/` |
 
 ## 6. Build and link model
 
@@ -811,7 +860,8 @@ illumos-ddi/
   crates/ddi-pcmcia-sys/     PC Card services (genunix)
   crates/ddi-gld-sys/        GLDv2 (misc/gld)
   crates/ddi-ktest-sys/      kernel test framework (drv/ktest)
-  crates/ddi/                core safe layer, including the module! macro
+  crates/illumos-kernel-private-sys/  private interfaces pinned to one gate commit (feature-gated)
+  crates/ddi/                core safe layer, including the module! macro; ddi::private behind the same feature
   examples/rnull/            pseudo char driver: read gives EOF, write discards, three ioctls
   examples/rselftest/        pseudo driver that runs a self-test of the safe layer in the kernel
   xtask/                     build, link, deps, lint-man, kernel-check
@@ -855,6 +905,7 @@ The run on `oibldofgate` (illumos `cda5b9a49f`, OpenIndiana Hipster
 | `ddi-pcmcia-sys` | 68 of 84 | 175 of 201 | 83 of 83 | nested and anonymous structures without a CTF name |
 | `ddi-gld-sys` | 7 of 7 | 41 of 41 | 14 of 14 | `misc/gld` loaded for the check |
 | `ddi-ktest-sys` | not checked | not checked | 16 of 16 | `drv/ktest` is not installed on the image; its symbols were read from the packaged module |
+| `illumos-kernel-private-sys` | 2 of 2 | 21 of 21 | 12 of 12 | checked on 29 September 2026 on a Hephaistos guest with the same kernel; log `logs/hephaistos/illumos-drm/20260929-r2-kernel-check.log` |
 
 No size, no offset and no symbol disagreed with the kernel. Every count
 below the total is a type that CTF cannot name; those types are covered by
@@ -917,6 +968,17 @@ outside the kernel.
 
 `rnull` is loaded on `oibldofgate` (root, global zone) with `add_drv` and
 exercised with `dd`, a small ioctl test program and `rem_drv`.
+
+Built with its `private-gate` feature, `rselftest` also answers
+`RSELFTEST_IOC_ANONFD`, six checks of `ddi::private::fd` from the ioctl
+path: an `IoctlArg` that does not come from the glue cannot make a
+descriptor (the guard of section 5.12), a real one makes a close-on-exec,
+read-only descriptor of the driver's own minor that `FileRef` recognises,
+another device's descriptor is not recognised, and a closed one is
+`EBADF`. On 29 September 2026 all 55 checks (42 at attach, 7 LDI, 6
+private) passed on a Hephaistos guest (illumos `cda5b9a49f`); the log is
+`logs/hephaistos/illumos-drm/20260929-r2-rselftest-private.log` in the
+workspace. `rselftest_test` reports "not built" when the feature is off.
 
 `rselftest` is a pseudo driver that tests the safe layer from inside the
 kernel. When it attaches it runs 42 checks over properties from its `.conf`
